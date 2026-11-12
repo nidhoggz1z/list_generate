@@ -1,0 +1,17 @@
+gateway.env
+gateway_storage/
+.venv/
+__pycache__/
+*.pyc
+
+.local-test/
+dist/
+
+workflows/
+HiAgent/
+rules/
+examples/
+backups/
+verification/
+*.tar
+*.tar.gz

@@ -1,0 +1,8 @@
+**
+!Dockerfile
+!gateway/
+!gateway/**
+!service/
+!service/**
+**/__pycache__
+**/*.pyc
