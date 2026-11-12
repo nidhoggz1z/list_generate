@@ -6,7 +6,7 @@ DEPLOY_ENV=${DEPLOY_ENV:-sit}
 [[ $# == 0 ]] || { echo '用法：DEPLOY_ENV=sit|pi|prod bash deploy/k8s/prepare-bank.sh' >&2; exit 1; }
 [[ "$DEPLOY_ENV" == sit || "$DEPLOY_ENV" == pi || "$DEPLOY_ENV" == prod ]] || { echo '环境必须为 sit、pi 或 prod' >&2; exit 1; }
 python3 -B "$ROOT/tools/build_k8s_delivery.py" --check-config --environment "$DEPLOY_ENV"
-IMAGE=$(cat "$ROOT/deploy/k8s/images-sit.txt")
+IMAGE=$(cat "$ROOT/deploy/k8s/images-$DEPLOY_ENV.txt")
 VERSION=${VERSION:-${IMAGE##*:}}
 [[ "$VERSION" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || { echo '版本号无效' >&2; exit 1; }
 RELEASE=$VERSION

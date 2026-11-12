@@ -118,7 +118,7 @@ class DeliveryFixture:
 
     def configure_environment(self, environment):
         image_ref = f'harbor-{environment}.example:8443/team/material-checklist-dify:v7'
-        (self.root / 'deploy' / 'k8s' / 'images-sit.txt').write_text(image_ref + '\n')
+        (self.root / 'deploy' / 'k8s' / f'images-{environment}.txt').write_text(image_ref + '\n')
         manifest = self.root / 'k8s' / environment / 'material-checklist.yaml'
         manifest.write_text(manifest.read_text().replace(
             f'<{environment.upper()}环境CP回调完整URL>', f'http://cp-{environment}.example/callback'))
@@ -296,7 +296,7 @@ if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
             self.assertEqual(archive.extractfile('material-checklist-deploy/images-sit.txt').read(),
                              b'10.208.11.33/agents/shb/material-checklist-dify:v1\n')
 
-    def test_pi_and_prod_use_exact_image_from_shared_list(self):
+    def test_pi_and_prod_use_exact_image_from_environment_list(self):
         for environment in ('pi', 'prod'):
             with self.subTest(environment=environment):
                 image_ref = self.configure_environment(environment)
@@ -309,7 +309,7 @@ if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
                 source = unpack / 'material-checklist-bank'
                 self.assertEqual({p.name for p in (source / 'k8s').iterdir()}, {environment})
                 self.assertEqual({p.name for p in (source / 'deploy' / 'k8s').glob('images-*.txt')},
-                                 {'images-sit.txt'})
+                                 {f'images-{environment}.txt'})
                 result = subprocess.run(['bash', 'deploy/k8s/make-package.sh'], cwd=source,
                                         env=self.env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -320,8 +320,10 @@ if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
                 output = source / 'dist' / f'k8s-{environment}-v2'
                 with tarfile.open(output / 'material-checklist-deploy.tar.gz') as archive:
                     prefix = 'material-checklist-deploy/'
-                    self.assertEqual(archive.extractfile(prefix + 'images-sit.txt').read(),
+                    self.assertEqual(archive.extractfile(prefix + f'images-{environment}.txt').read(),
                                      (image_ref + '\n').encode())
+                    self.assertEqual(archive.extractfile(prefix + 'ENVIRONMENT').read(),
+                                     (environment + '\n').encode())
                     manifest = archive.extractfile(prefix + 'k8s/material-checklist.yaml').read().decode()
                     self.assertIn('image: ' + image_ref, manifest)
                     self.assertIn(f'http://cp-{environment}.example/callback', manifest)
@@ -393,7 +395,7 @@ class ScriptFlowTests(DeliveryFixture, unittest.TestCase):
                 self.assertEqual(call[1:5], ['--context', 'sit-test', '--namespace', 'agent2'])
         self.run_script('verify.sh')
 
-    def test_pi_and_prod_entry_push_and_deploy_image_from_shared_list(self):
+    def test_pi_and_prod_entry_push_and_deploy_image_from_environment_list(self):
         for environment in ('pi', 'prod'):
             with self.subTest(environment=environment):
                 image_ref = self.configure_environment(environment)
@@ -407,6 +409,7 @@ class ScriptFlowTests(DeliveryFixture, unittest.TestCase):
                 ).replace('<已发布应用的APIKey>', 'test-key'))
                 self.statefile.write_text('{}')
                 self.log.write_text('')
+                self.env['DEPLOY_ENV'] = 'sit'  # The packaged environment determines the image list.
                 self.run_script()
                 self.assertIn(['docker', 'push', image_ref], self.calls())
                 state = json.loads(self.statefile.read_text())

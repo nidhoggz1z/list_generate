@@ -15,11 +15,11 @@ SCRIPTS = ('common.sh', 'install-images.sh', 'push-loaded-images-from-list.sh',
 def environment_config(root, environment):
     if environment not in ('sit', 'pi', 'prod'):
         raise ValueError('环境必须为 sit、pi 或 prod')
-    image_list = root / 'deploy' / 'k8s' / 'images-sit.txt'
+    image_list = root / 'deploy' / 'k8s' / f'images-{environment}.txt'
     image_ref = image_list.read_text(encoding='utf-8').strip()
     if 'FIXME_' in image_ref or not re.fullmatch(
             r'[a-zA-Z0-9][a-zA-Z0-9./:_-]+:[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}', image_ref):
-        raise ValueError('请在 deploy/k8s/images-sit.txt 填写单个带 tag 的完整镜像地址')
+        raise ValueError(f'请在 deploy/k8s/images-{environment}.txt 填写单个带 tag 的完整镜像地址')
     manifest = (root / 'k8s' / environment / 'material-checklist.yaml').read_text(encoding='utf-8')
     images = re.findall(r'^\s*image:\s*(\S+)\s*$', manifest, re.MULTILINE)
     if len(images) != 1 or manifest.count(images[0]) != 1:
@@ -58,7 +58,7 @@ def prepare_bank(wheelhouse, version, *, root=ROOT, environment='sit'):
         sources = [root / 'Dockerfile.bank', root / '.dockerignore',
                    root / 'tools' / 'build_k8s_delivery.py']
         sources += [root / 'deploy' / 'k8s' / name for name in
-                    (*SCRIPTS, 'run-all.sh', 'make-package.sh', 'images-sit.txt')]
+                    (*SCRIPTS, 'run-all.sh', 'make-package.sh', f'images-{environment}.txt')]
         sources += [root / 'k8s' / environment / name for name in
                     ('00-namespace.yaml', 'material-checklist.yaml')] + rules
         for directory in ('gateway', 'service'):
@@ -121,7 +121,8 @@ def build(image, version, *, root=ROOT, split_bytes=1024**3, environment='sit'):
         (stage / 'rules').mkdir()
         for path in files:
             shutil.copyfile(path, stage / 'rules' / path.name)
-        (stage / 'images-sit.txt').write_text(image_ref + '\n', encoding='utf-8')
+        (stage / f'images-{environment}.txt').write_text(image_ref + '\n', encoding='utf-8')
+        (stage / 'ENVIRONMENT').write_text(environment + '\n', encoding='utf-8')
         (stage / 'VERSION').write_text(version + '\n', encoding='utf-8')
         image_name = 'material-checklist-images.tar.gz'
         archive_path = work / (PACKAGE + '.tar.gz')

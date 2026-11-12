@@ -1,5 +1,5 @@
 # 交付前或解包后在本文件填写现场配置。不要提交真实凭据。
-# image 由打包脚本按 deploy/k8s/images-sit.txt 的完整镜像名自动替换。
+# image 由打包脚本按 deploy/k8s/images-pi.txt 的完整镜像名自动替换。
 apiVersion: v1
 kind: Secret
 metadata:

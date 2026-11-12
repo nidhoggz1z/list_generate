@@ -6,19 +6,27 @@
 
 三套配置分别位于 `k8s/sit/`、`k8s/pi/`、`k8s/prod/`，命名空间均为 `agent2`。通过 `DEPLOY_ENV=sit|pi|prod` 选择打包的 YAML，默认 `sit`。三套配置用于各自的集群；执行前确认目标 context，不能在同一集群的 `agent2` 同时部署多套同名服务。
 
-完整镜像名统一在 `deploy/k8s/images-sit.txt` 填写，文件名保留，所有环境共用这个入口。文件只放一行，包含实际 Harbor 地址、项目路径、镜像名和 tag。构建、导出、现场推送及生成的部署 YAML 均使用这一个完整值，不根据环境拼接 Harbor，也不覆盖 tag。
+每个环境使用独立的镜像清单：
 
-PI、生产的 Harbor 尚未确定；确定后在准备包生成前修改 `images-sit.txt`，并填写所选环境 `material-checklist.yaml` 中的 HiAgent URL、API Key、CP 回调及影像参数。源 YAML 的 `image` 是模板值，打包时自动用镜像清单的完整值替换，无需手动保持两处一致。真实凭据不要提交到 Git。
+| 环境 | 镜像清单 |
+| --- | --- |
+| SIT | `deploy/k8s/images-sit.txt` |
+| PI | `deploy/k8s/images-pi.txt` |
+| 生产 | `deploy/k8s/images-prod.txt` |
+
+每个文件只放一行，包含实际 Harbor 地址、项目路径、镜像名和 tag。构建、导出、现场推送及生成的部署 YAML 均使用所选清单的完整值，不额外拼接 Harbor，也不覆盖 tag。部署包只携带所选环境的镜像清单，并通过包内 `ENVIRONMENT` 记录让现场脚本自动选择；现场仍直接运行 `run-all.sh`。
+
+PI、生产的 Harbor 尚未确定，镜像清单暂用 `FIXME_` 占位；准备交付前必须填入实际完整镜像名，否则脚本会退出。同时填写所选环境 `material-checklist.yaml` 中的 HiAgent URL、API Key、CP 回调及影像参数。源 YAML 的 `image` 是模板值，打包时自动用对应镜像清单的完整值替换，无需手动保持两处一致。真实凭据不要提交到 Git。
 
 例如准备 PI 交付：
 
 ```bash
-vi deploy/k8s/images-sit.txt
+vi deploy/k8s/images-pi.txt
 vi k8s/pi/material-checklist.yaml
 DEPLOY_ENV=pi bash deploy/k8s/prepare-bank.sh
 ```
 
-生产使用 `DEPLOY_ENV=prod` 和 `k8s/prod/material-checklist.yaml`。假设镜像 tag 为 `v1`，PI 准备包是 `dist/material-checklist-bank-pi-v1.tar.gz`，生产是 `dist/material-checklist-bank-prod-v1.tar.gz`。解压后构建命令仍是 `bash deploy/k8s/make-package.sh`，脚本自动读取准备包中记录的环境，分别输出到 `dist/k8s-pi-v1/`、`dist/k8s-prod-v1/`。每个环境使用独立的解包目录。
+生产使用 `DEPLOY_ENV=prod`、`deploy/k8s/images-prod.txt` 和 `k8s/prod/material-checklist.yaml`。假设镜像 tag 为 `v1`，PI 准备包是 `dist/material-checklist-bank-pi-v1.tar.gz`，生产是 `dist/material-checklist-bank-prod-v1.tar.gz`。解压后构建命令仍是 `bash deploy/k8s/make-package.sh`，脚本自动读取准备包中记录的环境，分别输出到 `dist/k8s-pi-v1/`、`dist/k8s-prod-v1/`。每个环境使用独立的解包目录。
 
 ## 本地准备源码和离线依赖（不构建镜像）
 
@@ -59,7 +67,7 @@ bash deploy/k8s/make-package.sh
 
 如现场基座地址有变化，通过 `BANK_BASE=<实际麒麟镜像> bash deploy/k8s/make-package.sh` 指定。Dockerfile 直接继承基座层，使用基座 Python 3.12 创建 venv，从 wheelhouse 离线安装；不使用 Debian 镜像、公网 pip 或 yum/apt。构建后以 appuser 并补充组 0 做 import 冒烟，再导出镜像、生成部署包。
 
-11.33 构建只需 Bash、Docker、tar/gzip；不要求宿主机安装 Python 3.12 或 Git，打包代码由产物容器内的 Python 执行。交付包版本优先取 `VERSION` 环境变量，其次取准备包的 `BANK_VERSION`，没有记录时取镜像 tag；镜像本身始终以 `images-sit.txt` 为准。首版 SIT 输出 `material-checklist-bank/dist/k8s-v1/`，存在时拒绝覆盖。后续发布使用新版本。需要核对镜像血缘时执行 `docker image inspect --format '{{json .RootFS.Layers}}' <镜像>`，产物层应保留麒麟基座层作为前缀。
+11.33 构建只需 Bash、Docker、tar/gzip；不要求宿主机安装 Python 3.12 或 Git，打包代码由产物容器内的 Python 执行。交付包版本优先取 `VERSION` 环境变量，其次取准备包的 `BANK_VERSION`，没有记录时取镜像 tag；镜像本身始终以所选环境的镜像清单为准。首版 SIT 输出 `material-checklist-bank/dist/k8s-v1/`，存在时拒绝覆盖。后续发布使用新版本。需要核对镜像血缘时执行 `docker image inspect --format '{{json .RootFS.Layers}}' <镜像>`，产物层应保留麒麟基座层作为前缀。
 
 输出只包括 `run-all.sh`、`material-checklist-deploy.tar.gz` 和 `material-checklist-images.tar.gz`（超过 1GiB 时自动分片）。不包含 HiAgent 工作流或平台。构建脚本只负责生成交付物，不执行 kubectl；推送 Harbor 和启动服务仍由下文 `run-all.sh` 执行。
 
