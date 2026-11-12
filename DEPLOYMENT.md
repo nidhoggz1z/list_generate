@@ -17,7 +17,7 @@ release.sh 校验文件、加载镜像并安装到 /data/deploy_material-checkli
 
 ## 高码配置
 
-编辑部署目录内 gateway.env：
+首次安装使用包内模板初始化 gateway.env，其中已预填 HiAgent 接口和 CP 回调地址。升级保留部署机现有配置。部署时在目标机填写已发布 HiAgent 应用的 API Key，并按需填写影像下载参数。配置项如下。
 
 ```text
 DIFY_API_URL=<Postman中调用成功的完整HiAgent同步接口URL>
