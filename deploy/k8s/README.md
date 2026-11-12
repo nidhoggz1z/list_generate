@@ -1,6 +1,24 @@
-# 材料清单 K8s 独立交付（SIT）
+# 材料清单 K8s 独立交付（SIT / PI / 生产）
 
 部署方式参考 shb-delivery-deploy：解压部署包 → 导入镜像 → 推送 Harbor → 应用服务 YAML → 等待就绪。命名空间是 `agent2`，所有操作只涉及材料清单项目的资源。不生成或要求额外的校验文件。
+
+## 选择环境和镜像地址
+
+三套配置分别位于 `k8s/sit/`、`k8s/pi/`、`k8s/prod/`，命名空间均为 `agent2`。通过 `DEPLOY_ENV=sit|pi|prod` 选择打包的 YAML，默认 `sit`。三套配置用于各自的集群；执行前确认目标 context，不能在同一集群的 `agent2` 同时部署多套同名服务。
+
+完整镜像名统一在 `deploy/k8s/images-sit.txt` 填写，文件名保留，所有环境共用这个入口。文件只放一行，包含实际 Harbor 地址、项目路径、镜像名和 tag。构建、导出、现场推送及生成的部署 YAML 均使用这一个完整值，不根据环境拼接 Harbor，也不覆盖 tag。
+
+PI、生产的 Harbor 尚未确定；确定后在准备包生成前修改 `images-sit.txt`，并填写所选环境 `material-checklist.yaml` 中的 HiAgent URL、API Key、CP 回调及影像参数。源 YAML 的 `image` 是模板值，打包时自动用镜像清单的完整值替换，无需手动保持两处一致。真实凭据不要提交到 Git。
+
+例如准备 PI 交付：
+
+```bash
+vi deploy/k8s/images-sit.txt
+vi k8s/pi/material-checklist.yaml
+DEPLOY_ENV=pi bash deploy/k8s/prepare-bank.sh
+```
+
+生产使用 `DEPLOY_ENV=prod` 和 `k8s/prod/material-checklist.yaml`。假设镜像 tag 为 `v1`，PI 准备包是 `dist/material-checklist-bank-pi-v1.tar.gz`，生产是 `dist/material-checklist-bank-prod-v1.tar.gz`。解压后构建命令仍是 `bash deploy/k8s/make-package.sh`，脚本自动读取准备包中记录的环境，分别输出到 `dist/k8s-pi-v1/`、`dist/k8s-prod-v1/`。每个环境使用独立的解包目录。
 
 ## 本地准备源码和离线依赖（不构建镜像）
 
@@ -10,11 +28,14 @@
 bash deploy/k8s/prepare-bank.sh
 ```
 
-首版默认版本为 `v1`，生成 `material-checklist-bank-v1.tar.gz`，镜像为 `10.208.11.33/agents/shb/material-checklist-dify:v1`。后续发布可显式指定新版本，例如：
+以下以 SIT 为例。默认清单中的镜像为 `10.208.11.33/agents/shb/material-checklist-dify:v1`，生成 `material-checklist-bank-v1.tar.gz`。后续发布在镜像清单中修改 tag 后重新准备：
 
 ```bash
-VERSION=v2 bash deploy/k8s/prepare-bank.sh
+vi deploy/k8s/images-sit.txt
+bash deploy/k8s/prepare-bank.sh
 ```
+
+交付包版本默认取镜像 tag；如显式设置 `VERSION`，仅改变交付包标识和输出目录，不改变镜像清单中的 tag。
 
 本地需要 Python 3.11+ 和 pip，不需要 Docker。脚本为 Linux x86_64、CPython 3.12、glibc 2.28 采集 wheel（兼容 manylinux2014），并用采集结果离线解析一次依赖闭包，缺少二进制 wheel 时停止。自动带上源码、`Dockerfile.bank`、根目录 `rules/` 的 Word/Excel、构建脚本和 K8s 清单，不携带 Git、实际 gateway.env 或本地虚拟环境。
 
@@ -38,15 +59,15 @@ bash deploy/k8s/make-package.sh
 
 如现场基座地址有变化，通过 `BANK_BASE=<实际麒麟镜像> bash deploy/k8s/make-package.sh` 指定。Dockerfile 直接继承基座层，使用基座 Python 3.12 创建 venv，从 wheelhouse 离线安装；不使用 Debian 镜像、公网 pip 或 yum/apt。构建后以 appuser 并补充组 0 做 import 冒烟，再导出镜像、生成部署包。
 
-11.33 构建只需 Bash、Docker、tar/gzip；不要求宿主机安装 Python 3.12 或 Git，打包代码由产物容器内的 Python 执行。版本优先取 `VERSION` 环境变量，其次取准备包的 `BANK_VERSION`，没有记录时默认为 `v1`。首版输出 `material-checklist-bank/dist/k8s-v1/`，存在时拒绝覆盖。后续发布使用新版本。需要核对镜像血缘时执行 `docker image inspect --format '{{json .RootFS.Layers}}' <镜像>`，产物层应保留麒麟基座层作为前缀。
+11.33 构建只需 Bash、Docker、tar/gzip；不要求宿主机安装 Python 3.12 或 Git，打包代码由产物容器内的 Python 执行。交付包版本优先取 `VERSION` 环境变量，其次取准备包的 `BANK_VERSION`，没有记录时取镜像 tag；镜像本身始终以 `images-sit.txt` 为准。首版 SIT 输出 `material-checklist-bank/dist/k8s-v1/`，存在时拒绝覆盖。后续发布使用新版本。需要核对镜像血缘时执行 `docker image inspect --format '{{json .RootFS.Layers}}' <镜像>`，产物层应保留麒麟基座层作为前缀。
 
 输出只包括 `run-all.sh`、`material-checklist-deploy.tar.gz` 和 `material-checklist-images.tar.gz`（超过 1GiB 时自动分片）。不包含 HiAgent 工作流或平台。构建脚本只负责生成交付物，不执行 kubectl；推送 Harbor 和启动服务仍由下文 `run-all.sh` 执行。
 
 ## 现场一键部署
 
-将 11.33 生成的输出目录下全部文件复制或上传到 `/haw/lwh-install/`。执行机器需要有 Docker 权限、Harbor 推送权限和 kubectl 权限，以及 Bash、tar/gzip、sha256sum（仅计算配置与规则版本摘要），验证外部入口时需要 curl。提前登录 `10.208.11.33`，确认 Harbor 的 `agents` 项目已存在且工作节点能够拉取镜像。Ingress 控制器需要监听 `agent2`，`/material-checklist` 路径不能被其他项目占用。
+将 11.33 生成的对应环境输出目录下全部文件复制或上传到 `/haw/lwh-install/`。执行机器需要有 Docker 权限、Harbor 推送权限和 kubectl 权限，以及 Bash、tar/gzip、sha256sum（仅计算配置与规则版本摘要），验证外部入口时需要 curl。提前登录镜像清单中的目标 Harbor，确认对应项目已存在且工作节点能够拉取镜像。Ingress 控制器需要监听 `agent2`，`/material-checklist` 路径不能被其他项目占用。
 
-确认当前 kubeconfig 指向 SIT：
+确认当前 kubeconfig 指向目标环境集群：
 
 ```bash
 kubectl config current-context
@@ -61,7 +82,7 @@ tar -xzf material-checklist-deploy.tar.gz
 vi material-checklist-deploy/k8s/material-checklist.yaml
 ```
 
-需要核对 `DIFY_API_URL`（完整 HiAgent 同步 URL）、`DIFY_API_KEY`、`CALLBACK_URL`；相对影像路径还要填写 `IMAGE_PLATFORM_DOWNLOAD_BASE_URL`、`IMAGE_PLATFORM_AU`。配置集中在服务 YAML 的 Secret，容器通过环境变量读取，不需要额外 env 文件。仍为占位符时部署脚本会退出。
+需要核对 `DIFY_API_URL`（完整 HiAgent 同步 URL）、`DIFY_API_KEY`、`CALLBACK_URL`；相对影像路径还要填写 `IMAGE_PLATFORM_DOWNLOAD_BASE_URL`、`IMAGE_PLATFORM_AU`。配置集中在服务 YAML 的 Secret，容器通过环境变量读取，不需要额外 env 文件。HiAgent 或回调配置仍为占位符时部署脚本会退出。交付包内配置已填写正确时，直接运行下面的一键入口，无需手动解压修改。
 
 ```bash
 bash /haw/lwh-install/run-all.sh
@@ -84,13 +105,13 @@ bash /haw/lwh-install/run-all.sh
 
 ```bash
 bash /haw/lwh-install/material-checklist-deploy/verify.sh
-ENTRY_URL=http://<SIT入口IP>:30100/material-checklist bash /haw/lwh-install/material-checklist-deploy/verify.sh
+ENTRY_URL=http://<目标环境入口IP>:30100/material-checklist bash /haw/lwh-install/material-checklist-deploy/verify.sh
 ```
 
 第一条检查 Pod、配置、健康、规则目录、首份规则正文以及 OpenAPI 前缀；第二条增加外部入口检查。探针正常不代表规则和 HiAgent/CP 链路正常，之后仍需使用专用任务进行业务联调。
 
-- CP：`POST http://<SIT入口IP>:30100/material-checklist/api/v1/tasks`。
-- HiAgent 的 `checklist_gateway_url`：`http://<SIT入口IP>:30100/material-checklist`。
+- CP：`POST http://<目标环境入口IP>:30100/material-checklist/api/v1/tasks`。
+- HiAgent 的 `checklist_gateway_url`：`http://<目标环境入口IP>:30100/material-checklist`。
 - 集群内：`http://material-checklist-gateway.agent2.svc:8000`，不加外部前缀。
 - 根路径没有业务页面，访问根路径返回 404 正常。内网 Swagger 页面还受其 CDN 资源可达性影响，可直接使用 `/material-checklist/openapi.json`。
 

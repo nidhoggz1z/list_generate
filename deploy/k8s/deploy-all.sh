@@ -10,8 +10,8 @@ esac
 init_cluster
 read_image
 MANIFEST="$SCRIPT_DIR/k8s/material-checklist.yaml"
-if grep -Eq 'DIFY_API_(URL|KEY):.*(<|FIXME_)' "$MANIFEST"; then
-    fail '请先填写 k8s/material-checklist.yaml 中的 HiAgent URL 和 API Key，再重跑本脚本'
+if grep -Eq '(DIFY_API_(URL|KEY)|CALLBACK_URL):.*(<|FIXME_)' "$MANIFEST"; then
+    fail '请先填写 k8s/material-checklist.yaml 中的 HiAgent URL、API Key 和回调 URL，再重跑本脚本'
 fi
 k get namespace "$NS" --ignore-not-found -o name >/dev/null
 for resource in 'deployment material-checklist-gateway' 'service material-checklist-gateway' 'ingress material-checklist-gateway' 'secret material-checklist-config'; do
@@ -132,5 +132,5 @@ k rollout status "deployment/$APP" --timeout=900s
 k exec "deployment/$APP" -- python -c 'from gateway.config import Settings; from service.app import RuleStore; s=Settings.from_env(); s.require_dify(); print("规则数：",len(RuleStore(s.rules_dir).files()))'
 k get pods -l "app=$APP" -o wide
 k logs "deployment/$APP" --tail=30
-say '入口：http://<SIT入口IP>:30100/material-checklist'
+say '入口：http://<目标环境入口IP>:30100/material-checklist'
 say '业务日志：容器 /app/gateway_storage/log/，节点 /haw/shb/data/material-checklist/gateway_storage/log/'

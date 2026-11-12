@@ -11,7 +11,7 @@ sha() { sha256sum "$1" | awk '{print $1}'; }
 init_cluster() {
     command -v kubectl >/dev/null || fail '未找到 kubectl'
     CONTEXT=${KUBE_CONTEXT:-$(kubectl config current-context)}
-    [[ -n "$CONTEXT" ]] || fail '请先配置目标 SIT context'
+    [[ -n "$CONTEXT" ]] || fail '请先配置目标集群 context'
     export KUBE_CONTEXT="$CONTEXT"
     say "context=$CONTEXT namespace=$NS"
 }
@@ -27,5 +27,5 @@ check_owner() {
 }
 read_image() {
     IMAGE=$(awk 'NF && $1 !~ /^#/ {sub(/\r$/, ""); print}' "$SCRIPT_DIR/images-sit.txt")
-    [[ "$IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:_-]+:[a-zA-Z0-9._-]+$ ]] || fail '镜像清单必须只有一个带 tag 的镜像'
+    [[ "$IMAGE" != *FIXME_* && "$IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:_-]+:[a-zA-Z0-9._-]+$ ]] || fail '镜像清单必须只有一个已填写的带 tag 镜像'
 }

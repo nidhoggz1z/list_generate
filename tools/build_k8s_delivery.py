@@ -12,6 +12,21 @@ SCRIPTS = ('common.sh', 'install-images.sh', 'push-loaded-images-from-list.sh',
            'deploy-all.sh', 'verify.sh', 'bootstrap.py', 'README.md')
 
 
+def environment_config(root, environment):
+    if environment not in ('sit', 'pi', 'prod'):
+        raise ValueError('环境必须为 sit、pi 或 prod')
+    image_list = root / 'deploy' / 'k8s' / 'images-sit.txt'
+    image_ref = image_list.read_text(encoding='utf-8').strip()
+    if 'FIXME_' in image_ref or not re.fullmatch(
+            r'[a-zA-Z0-9][a-zA-Z0-9./:_-]+:[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}', image_ref):
+        raise ValueError('请在 deploy/k8s/images-sit.txt 填写单个带 tag 的完整镜像地址')
+    manifest = (root / 'k8s' / environment / 'material-checklist.yaml').read_text(encoding='utf-8')
+    images = re.findall(r'^\s*image:\s*(\S+)\s*$', manifest, re.MULTILINE)
+    if len(images) != 1 or manifest.count(images[0]) != 1:
+        raise ValueError('源清单必须包含一个镜像引用')
+    return image_ref, manifest, images[0]
+
+
 def rule_files(root=ROOT):
     files = sorted(path for path in (root / 'rules').iterdir()
                    if path.is_file() and not path.name.startswith('~$') and
@@ -24,15 +39,17 @@ def rule_files(root=ROOT):
     return files
 
 
-def prepare_bank(wheelhouse, version, *, root=ROOT):
+def prepare_bank(wheelhouse, version, *, root=ROOT, environment='sit'):
     """Copy an explicit source allowlist plus target wheels; never run Docker."""
     if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', version):
         raise ValueError('版本号无效')
+    environment_config(root, environment)
     rules = rule_files(root)
     wheels = sorted(Path(wheelhouse).glob('*.whl'))
     if not wheels or any(p.is_symlink() or not p.is_file() for p in wheels):
         raise ValueError('离线 wheelhouse 为空或包含符号链接')
-    output = root / 'dist' / ('material-checklist-bank-' + version + '.tar.gz')
+    release = version if environment == 'sit' else environment + '-' + version
+    output = root / 'dist' / ('material-checklist-bank-' + release + '.tar.gz')
     if output.exists():
         raise ValueError('准备包已存在，请先备份移走')
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -41,8 +58,9 @@ def prepare_bank(wheelhouse, version, *, root=ROOT):
         sources = [root / 'Dockerfile.bank', root / '.dockerignore',
                    root / 'tools' / 'build_k8s_delivery.py']
         sources += [root / 'deploy' / 'k8s' / name for name in
-                    (*SCRIPTS, 'run-all.sh', 'make-package.sh')]
-        sources += list((root / 'k8s' / 'sit').glob('*.yaml')) + rules
+                    (*SCRIPTS, 'run-all.sh', 'make-package.sh', 'images-sit.txt')]
+        sources += [root / 'k8s' / environment / name for name in
+                    ('00-namespace.yaml', 'material-checklist.yaml')] + rules
         for directory in ('gateway', 'service'):
             sources += [p for p in (root / directory).rglob('*') if p.is_file() and
                         (p.suffix == '.py' or p.name == 'requirements.txt') and
@@ -58,6 +76,7 @@ def prepare_bank(wheelhouse, version, *, root=ROOT):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(wheel, destination)
         (stage / 'BANK_VERSION').write_text(version + '\n', encoding='utf-8')
+        (stage / 'BANK_ENV').write_text(environment + '\n', encoding='utf-8')
         archive_path = Path(temporary) / output.name
         with tarfile.open(archive_path, 'w:gz') as archive:
             for path in sorted(p for p in stage.rglob('*') if p.is_file()):
@@ -73,20 +92,21 @@ def prepare_bank(wheelhouse, version, *, root=ROOT):
     return output
 
 
-def build(image, version, *, root=ROOT, split_bytes=1024**3):
+def build(image, version, *, root=ROOT, split_bytes=1024**3, environment='sit'):
     if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', version):
         raise ValueError('版本号无效')
     if split_bytes <= 0:
         raise ValueError('分片大小必须大于零')
+    image_ref, manifest, source_image = environment_config(root, environment)
     files = rule_files(root)
     image = Path(image)
     if not image.is_file() or image.stat().st_size == 0:
         raise ValueError('缺少保存的压缩镜像')
-    output = root / 'dist' / ('k8s-' + version)
+    release = version if environment == 'sit' else environment + '-' + version
+    output = root / 'dist' / ('k8s-' + release)
     if output.exists():
         raise ValueError('输出目录已存在，请先备份移走')
     output.parent.mkdir(parents=True, exist_ok=True)
-    image_ref = '10.208.11.33/agents/shb/material-checklist-dify:' + version
     with tempfile.TemporaryDirectory(prefix='.k8s-package-', dir=output.parent) as temporary:
         work = Path(temporary)
         stage = work / PACKAGE
@@ -95,11 +115,7 @@ def build(image, version, *, root=ROOT, split_bytes=1024**3):
             shutil.copyfile(root / 'deploy' / 'k8s' / name, stage / name)
         shutil.copyfile(root / 'deploy' / 'k8s' / 'run-all.sh', work / 'run-all.sh')
         (stage / 'k8s').mkdir()
-        shutil.copyfile(root / 'k8s' / 'sit' / '00-namespace.yaml', stage / 'k8s' / '00-namespace.yaml')
-        manifest = (root / 'k8s' / 'sit' / 'material-checklist.yaml').read_text(encoding='utf-8')
-        source_image = '10.208.11.33/agents/shb/material-checklist-dify:v1'
-        if manifest.count(source_image) != 1:
-            raise ValueError('源清单镜像引用不符合预期')
+        shutil.copyfile(root / 'k8s' / environment / '00-namespace.yaml', stage / 'k8s' / '00-namespace.yaml')
         (stage / 'k8s' / 'material-checklist.yaml').write_text(
             manifest.replace(source_image, image_ref), encoding='utf-8')
         (stage / 'rules').mkdir()
@@ -143,16 +159,21 @@ def build(image, version, *, root=ROOT, split_bytes=1024**3):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-rules', action='store_true')
+    parser.add_argument('--check-config', action='store_true')
+    parser.add_argument('--environment', choices=('sit', 'pi', 'prod'), default='sit')
     parser.add_argument('--prepare-bank', action='store_true')
     parser.add_argument('--wheelhouse', type=Path)
     parser.add_argument('--image', type=Path)
     parser.add_argument('--version')
     args = parser.parse_args()
-    if args.check_rules:
+    if args.check_config:
+        rule_files()
+        environment_config(ROOT, args.environment)
+    elif args.check_rules:
         rule_files()
     elif args.prepare_bank and args.wheelhouse and args.version:
-        prepare_bank(args.wheelhouse, args.version)
+        prepare_bank(args.wheelhouse, args.version, environment=args.environment)
     elif args.image and args.version:
-        build(args.image, args.version)
+        build(args.image, args.version, environment=args.environment)
     else:
         parser.error('需要 --check-rules、--prepare-bank --wheelhouse --version，或 --image --version')

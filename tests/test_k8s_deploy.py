@@ -112,7 +112,17 @@ class DeliveryFixture:
         self.image.write_bytes(b'fake-saved-image' * 8)
 
     def package(self, *, split_bytes=1024):
+        (self.root / 'deploy' / 'k8s' / 'images-sit.txt').write_text(
+            '10.208.11.33/agents/shb/material-checklist-dify:test-01\n')
         return build(self.image, 'test-01', root=self.root, split_bytes=split_bytes)
+
+    def configure_environment(self, environment):
+        image_ref = f'harbor-{environment}.example:8443/team/material-checklist-dify:v7'
+        (self.root / 'deploy' / 'k8s' / 'images-sit.txt').write_text(image_ref + '\n')
+        manifest = self.root / 'k8s' / environment / 'material-checklist.yaml'
+        manifest.write_text(manifest.read_text().replace(
+            f'<{environment.upper()}环境CP回调完整URL>', f'http://cp-{environment}.example/callback'))
+        return image_ref
 
 
 class DeliveryTests(DeliveryFixture, unittest.TestCase):
@@ -127,6 +137,8 @@ class DeliveryTests(DeliveryFixture, unittest.TestCase):
             self.assertFalse(any(n.endswith(('.sha256', 'SHA256SUMS')) for n in names))
             manifest = archive.extractfile('material-checklist-deploy/k8s/material-checklist.yaml').read()
             self.assertIn(b'material-checklist-dify:test-01', manifest)
+            self.assertEqual(archive.extractfile('material-checklist-deploy/images-sit.txt').read(),
+                             b'10.208.11.33/agents/shb/material-checklist-dify:test-01\n')
             self.assertTrue(all(m.mode in (0o600, 0o755) for m in archive.getmembers()))
         with self.assertRaises(ValueError):
             self.package()
@@ -137,6 +149,17 @@ class DeliveryTests(DeliveryFixture, unittest.TestCase):
         (self.root / 'rules' / '话术库对应材料.xlsx').unlink()
         with self.assertRaises(ValueError):
             self.package()
+        self.assertFalse((self.root / 'dist').exists())
+
+    def test_invalid_environment_and_image_fail_before_output(self):
+        with self.assertRaises(ValueError):
+            build(self.image, 'v1', root=self.root, environment='../sit')
+        for value in ('', 'FIXME_HARBOR/team/app:v1', 'harbor.example/team/app',
+                      'harbor.example/team/app:v1\nharbor.example/team/app:v2'):
+            with self.subTest(value=value):
+                (self.root / 'deploy' / 'k8s' / 'images-sit.txt').write_text(value)
+                with self.assertRaises(ValueError):
+                    build(self.image, 'v1', root=self.root)
         self.assertFalse((self.root / 'dist').exists())
 
     def test_bootstrap_preserves_rules_and_backs_up_before_update(self):
@@ -220,6 +243,7 @@ if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
                                  'BUILD_LOG': str(self.log)}
         self.env.pop('VERSION', None)
         self.env.pop('BANK_BASE', None)
+        self.env.pop('DEPLOY_ENV', None)
 
     def test_source_bundle_has_linux_wheels_and_no_local_config(self):
         with tarfile.open(self.archive) as archive:
@@ -227,8 +251,11 @@ if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
         self.assertTrue(all(n.startswith('material-checklist-bank/') for n in names))
         self.assertFalse(any(n.endswith('gateway.env') or n.endswith('local.env') for n in names))
         self.assertTrue((self.source / 'Dockerfile.bank').is_file())
+        self.assertEqual((self.source / 'deploy' / 'k8s' / 'images-sit.txt').read_bytes(),
+                         (ROOT / 'deploy' / 'k8s' / 'images-sit.txt').read_bytes())
         self.assertFalse((self.source / 'Dockerfile').exists())
         self.assertEqual((self.source / 'BANK_VERSION').read_text().strip(), 'test-bank')
+        self.assertEqual((self.source / 'BANK_ENV').read_text().strip(), 'sit')
         self.assertFalse(any(n.endswith(('.sha256', 'SHA256SUMS')) for n in names))
         self.assertFalse(self.archive.with_name(self.archive.name + '.sha256').exists())
         self.assertTrue(list((self.source / 'offline' / 'wheelhouse').glob('*.whl')))
@@ -258,6 +285,7 @@ if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
 
     def test_build_defaults_to_v1_without_git_or_prepared_version(self):
         (self.source / 'BANK_VERSION').unlink()
+        (self.source / 'BANK_ENV').unlink()
         result = subprocess.run(['bash', 'deploy/k8s/make-package.sh'], cwd=self.source,
                                 env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -267,6 +295,45 @@ if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
         with tarfile.open(self.source / 'dist' / 'k8s-v1' / 'material-checklist-deploy.tar.gz') as archive:
             self.assertEqual(archive.extractfile('material-checklist-deploy/images-sit.txt').read(),
                              b'10.208.11.33/agents/shb/material-checklist-dify:v1\n')
+
+    def test_pi_and_prod_use_exact_image_from_shared_list(self):
+        for environment in ('pi', 'prod'):
+            with self.subTest(environment=environment):
+                image_ref = self.configure_environment(environment)
+                archive_path = prepare_bank(self.wheels, 'v2', root=self.root, environment=environment)
+                self.assertEqual(archive_path.name, f'material-checklist-bank-{environment}-v2.tar.gz')
+                unpack = self.root / environment
+                unpack.mkdir()
+                with tarfile.open(archive_path) as archive:
+                    archive.extractall(unpack, filter='data')
+                source = unpack / 'material-checklist-bank'
+                self.assertEqual({p.name for p in (source / 'k8s').iterdir()}, {environment})
+                self.assertEqual({p.name for p in (source / 'deploy' / 'k8s').glob('images-*.txt')},
+                                 {'images-sit.txt'})
+                result = subprocess.run(['bash', 'deploy/k8s/make-package.sh'], cwd=source,
+                                        env=self.env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+                build_call = [c for c in calls if c[0] == 'build'][-1]
+                self.assertEqual(build_call[build_call.index('-t') + 1], image_ref)
+                self.assertIn(['save', image_ref], calls)
+                output = source / 'dist' / f'k8s-{environment}-v2'
+                with tarfile.open(output / 'material-checklist-deploy.tar.gz') as archive:
+                    prefix = 'material-checklist-deploy/'
+                    self.assertEqual(archive.extractfile(prefix + 'images-sit.txt').read(),
+                                     (image_ref + '\n').encode())
+                    manifest = archive.extractfile(prefix + 'k8s/material-checklist.yaml').read().decode()
+                    self.assertIn('image: ' + image_ref, manifest)
+                    self.assertIn(f'http://cp-{environment}.example/callback', manifest)
+                    self.assertNotIn('FIXME_IMAGE_FROM_LIST', manifest)
+                    self.assertNotIn('10.208.11.33', manifest)
+
+    def test_unfilled_harbor_stops_before_docker_build(self):
+        (self.source / 'deploy' / 'k8s' / 'images-sit.txt').write_text('FIXME_HARBOR/team/app:v1\n')
+        result = subprocess.run(['bash', 'deploy/k8s/make-package.sh'], cwd=self.source,
+                                env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.log.exists())
 
 
 @unittest.skipUnless(importlib.util.find_spec('yaml'), '需要现有 requirements-build.txt 中的 PyYAML')
@@ -325,6 +392,34 @@ class ScriptFlowTests(DeliveryFixture, unittest.TestCase):
             if call[0] == 'kubectl' and call[1] != 'config':
                 self.assertEqual(call[1:5], ['--context', 'sit-test', '--namespace', 'agent2'])
         self.run_script('verify.sh')
+
+    def test_pi_and_prod_entry_push_and_deploy_image_from_shared_list(self):
+        for environment in ('pi', 'prod'):
+            with self.subTest(environment=environment):
+                image_ref = self.configure_environment(environment)
+                self.output = build(self.image, 'v2', root=self.root, environment=environment)
+                with tarfile.open(self.output / 'material-checklist-deploy.tar.gz') as archive:
+                    archive.extractall(self.output, filter='data')
+                self.deploy = self.output / 'material-checklist-deploy'
+                manifest = self.deploy / 'k8s' / 'material-checklist.yaml'
+                manifest.write_text(manifest.read_text().replace(
+                    '<完整HiAgent同步接口URL>', f'http://hiagent-{environment}.example/sync_run_app_workflow'
+                ).replace('<已发布应用的APIKey>', 'test-key'))
+                self.statefile.write_text('{}')
+                self.log.write_text('')
+                self.run_script()
+                self.assertIn(['docker', 'push', image_ref], self.calls())
+                state = json.loads(self.statefile.read_text())
+                deployment = state['objects']['deployment/material-checklist-gateway']
+                self.assertEqual(deployment['spec']['template']['spec']['containers'][0]['image'], image_ref)
+                self.assertEqual(deployment['metadata']['namespace'], 'agent2')
+
+    def test_unfilled_callback_stops_before_apply(self):
+        self.manifest.write_text(self.manifest.read_text().replace(
+            'http://10.240.184.200:9090/NLSC/LdsAiTaskESBFunctionApi/0.1.0/ldaAiTaskResultCallback',
+            '<PI环境CP回调完整URL>'))
+        self.run_script('deploy-all.sh', success=False)
+        self.assertFalse(any('apply' in c for c in self.calls()))
 
     def test_rerun_has_no_scale_or_prepare_and_upgrade_checks_busy_queue(self):
         self.run_script()

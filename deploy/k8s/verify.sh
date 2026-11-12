@@ -25,5 +25,5 @@ if [[ -n "${ENTRY_URL:-}" ]]; then
     curl --fail --silent --show-error --max-time 30 "${ENTRY_URL%/}/health"
     curl --fail --silent --show-error --max-time 30 "${ENTRY_URL%/}/v1/checklist-files"
 else
-    say '外部入口未自动检查；设置 ENTRY_URL=http://<SIT入口IP>:30100/material-checklist 后重跑 verify.sh'
+    say '外部入口未自动检查；设置 ENTRY_URL=http://<目标环境入口IP>:30100/material-checklist 后重跑 verify.sh'
 fi
