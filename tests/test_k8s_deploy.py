@@ -256,6 +256,18 @@ if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.log.exists())
 
+    def test_build_defaults_to_v1_without_git_or_prepared_version(self):
+        (self.source / 'BANK_VERSION').unlink()
+        result = subprocess.run(['bash', 'deploy/k8s/make-package.sh'], cwd=self.source,
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        build_call = next(c for c in calls if c[0] == 'build')
+        self.assertIn('10.208.11.33/agents/shb/material-checklist-dify:v1', build_call)
+        with tarfile.open(self.source / 'dist' / 'k8s-v1' / 'material-checklist-deploy.tar.gz') as archive:
+            self.assertEqual(archive.extractfile('material-checklist-deploy/images-sit.txt').read(),
+                             b'10.208.11.33/agents/shb/material-checklist-dify:v1\n')
+
 
 @unittest.skipUnless(importlib.util.find_spec('yaml'), '需要现有 requirements-build.txt 中的 PyYAML')
 class ScriptFlowTests(DeliveryFixture, unittest.TestCase):

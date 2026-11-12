@@ -6,7 +6,7 @@ if [[ -z "${VERSION:-}" ]]; then
     if [[ -f "$ROOT/BANK_VERSION" ]]; then
         VERSION=$(cat "$ROOT/BANK_VERSION")
     else
-        VERSION=$(git -C "$ROOT" rev-parse --short=12 HEAD)
+        VERSION=v1
     fi
 fi
 BANK_BASE=${BANK_BASE:-10.208.11.33/k8s/kylinv10sp3-python312-ssh:latest}

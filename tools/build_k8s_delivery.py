@@ -97,7 +97,7 @@ def build(image, version, *, root=ROOT, split_bytes=1024**3):
         (stage / 'k8s').mkdir()
         shutil.copyfile(root / 'k8s' / 'sit' / '00-namespace.yaml', stage / 'k8s' / '00-namespace.yaml')
         manifest = (root / 'k8s' / 'sit' / 'material-checklist.yaml').read_text(encoding='utf-8')
-        source_image = '10.208.11.33/agents/shb/material-checklist-dify:1.0'
+        source_image = '10.208.11.33/agents/shb/material-checklist-dify:v1'
         if manifest.count(source_image) != 1:
             raise ValueError('源清单镜像引用不符合预期')
         (stage / 'k8s' / 'material-checklist.yaml').write_text(

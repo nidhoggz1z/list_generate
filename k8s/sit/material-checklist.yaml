@@ -46,7 +46,7 @@ spec:
       terminationGracePeriodSeconds: 120
       containers:
       - name: gateway
-        image: 10.208.11.33/agents/shb/material-checklist-dify:1.0
+        image: 10.208.11.33/agents/shb/material-checklist-dify:v1
         imagePullPolicy: IfNotPresent
         args:
         - python

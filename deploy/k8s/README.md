@@ -10,10 +10,10 @@
 bash deploy/k8s/prepare-bank.sh
 ```
 
-默认版本取当前 Git 提交号。每次修改后使用新版本，示例：
+首版默认版本为 `v1`，生成 `material-checklist-bank-v1.tar.gz`，镜像为 `10.208.11.33/agents/shb/material-checklist-dify:v1`。后续发布可显式指定新版本，例如：
 
 ```bash
-VERSION=sit-20261112-01 bash deploy/k8s/prepare-bank.sh
+VERSION=v2 bash deploy/k8s/prepare-bank.sh
 ```
 
 本地需要 Python 3.11+ 和 pip，不需要 Docker。脚本为 Linux x86_64、CPython 3.12、glibc 2.28 采集 wheel（兼容 manylinux2014），并用采集结果离线解析一次依赖闭包，缺少二进制 wheel 时停止。自动带上源码、`Dockerfile.bank`、根目录 `rules/` 的 Word/Excel、构建脚本和 K8s 清单，不携带 Git、实际 gateway.env 或本地虚拟环境。
@@ -22,10 +22,10 @@ VERSION=sit-20261112-01 bash deploy/k8s/prepare-bank.sh
 
 ## 在 11.33 使用麒麟基座构建
 
-在 11.33 存放准备包的目录执行（替换版本号）：
+在 11.33 存放首版准备包的目录执行：
 
 ```bash
-tar -xzf material-checklist-bank-<版本>.tar.gz
+tar -xzf material-checklist-bank-v1.tar.gz
 cd material-checklist-bank
 bash deploy/k8s/make-package.sh
 ```
@@ -38,7 +38,7 @@ bash deploy/k8s/make-package.sh
 
 如现场基座地址有变化，通过 `BANK_BASE=<实际麒麟镜像> bash deploy/k8s/make-package.sh` 指定。Dockerfile 直接继承基座层，使用基座 Python 3.12 创建 venv，从 wheelhouse 离线安装；不使用 Debian 镜像、公网 pip 或 yum/apt。构建后以 appuser 并补充组 0 做 import 冒烟，再导出镜像、生成部署包。
 
-11.33 构建只需 Bash、Docker、Git（直接用源码仓库且未指定 VERSION 时）、tar/gzip；不要求宿主机安装 Python 3.12，打包代码由产物容器内的 Python 执行。默认输出 `material-checklist-bank/dist/k8s-<版本>/`，存在时拒绝覆盖。每次发布使用新版本。需要核对镜像血缘时执行 `docker image inspect --format '{{json .RootFS.Layers}}' <镜像>`，产物层应保留麒麟基座层作为前缀。
+11.33 构建只需 Bash、Docker、tar/gzip；不要求宿主机安装 Python 3.12 或 Git，打包代码由产物容器内的 Python 执行。版本优先取 `VERSION` 环境变量，其次取准备包的 `BANK_VERSION`，没有记录时默认为 `v1`。首版输出 `material-checklist-bank/dist/k8s-v1/`，存在时拒绝覆盖。后续发布使用新版本。需要核对镜像血缘时执行 `docker image inspect --format '{{json .RootFS.Layers}}' <镜像>`，产物层应保留麒麟基座层作为前缀。
 
 输出只包括 `run-all.sh`、`material-checklist-deploy.tar.gz` 和 `material-checklist-images.tar.gz`（超过 1GiB 时自动分片）。不包含 HiAgent 工作流或平台。构建脚本只负责生成交付物，不执行 kubectl；推送 Harbor 和启动服务仍由下文 `run-all.sh` 执行。
 

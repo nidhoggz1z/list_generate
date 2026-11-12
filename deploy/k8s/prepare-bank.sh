@@ -2,7 +2,7 @@
 # 联网机只准备源码和 Linux wheel，不构建镜像、不需要 Docker。
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-VERSION=${VERSION:-$(git -C "$ROOT" rev-parse --short=12 HEAD)}
+VERSION=${VERSION:-v1}
 [[ $# == 0 ]] || { echo '用法：VERSION=<发布版本> bash deploy/k8s/prepare-bank.sh' >&2; exit 1; }
 [[ "$VERSION" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || { echo '版本号无效' >&2; exit 1; }
 [[ ! -e "$ROOT/dist/material-checklist-bank-$VERSION.tar.gz" ]] || { echo '准备包已存在，请先备份移走' >&2; exit 1; }
