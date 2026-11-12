@@ -41,6 +41,8 @@ spec:
       nodeSelector:
         kubernetes.io/hostname: FIXME_WORKER
       automountServiceAccountToken: false
+      securityContext:
+        supplementalGroups: [0]
       terminationGracePeriodSeconds: 120
       containers:
       - name: gateway

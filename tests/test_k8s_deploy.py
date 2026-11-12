@@ -10,10 +10,12 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tools.build_k8s_delivery import build
+from tools.build_k8s_delivery import build, prepare_bank
 from deploy.k8s.bootstrap import prepare
 
 
@@ -63,6 +65,11 @@ if verb in ('apply','create'):
         if obj['kind']=='Namespace':
             state['namespace']=True; continue
         assert obj['metadata']['namespace']=='agent2'
+        if obj['kind']=='Deployment':
+            assert obj['spec']['template']['spec']['securityContext']['supplementalGroups']==[0]
+        if obj['kind']=='Pod':
+            assert obj['spec']['securityContext']['supplementalGroups']==[0]
+            assert obj['spec']['containers'][0]['securityContext']['runAsUser']==0
         state.setdefault('objects',{})[obj['kind'].lower()+'/'+obj['metadata']['name']]=obj
     done('created')
 if verb=='scale':
@@ -111,11 +118,13 @@ class DeliveryFixture:
 class DeliveryTests(DeliveryFixture, unittest.TestCase):
     def test_archive_is_independent_and_images_rules_match(self):
         output = self.package()
-        subprocess.run(['sha256sum', '-c', 'SHA256SUMS'], cwd=output, check=True, capture_output=True)
+        self.assertEqual({p.name for p in output.iterdir()}, {
+            'run-all.sh', 'material-checklist-deploy.tar.gz', 'material-checklist-images.tar.gz'})
         with tarfile.open(output / 'material-checklist-deploy.tar.gz') as archive:
             names = archive.getnames()
             self.assertTrue(all(n.startswith('material-checklist-deploy/') for n in names))
             self.assertFalse(any('~$' in n or 'gateway.env.local' in n for n in names))
+            self.assertFalse(any(n.endswith(('.sha256', 'SHA256SUMS')) for n in names))
             manifest = archive.extractfile('material-checklist-deploy/k8s/material-checklist.yaml').read()
             self.assertIn(b'material-checklist-dify:test-01', manifest)
             self.assertTrue(all(m.mode in (0o600, 0o755) for m in archive.getmembers()))
@@ -153,6 +162,99 @@ class DeliveryTests(DeliveryFixture, unittest.TestCase):
         with self.assertRaises(ValueError):
             prepare(self.root / 'data', stream)
         self.assertFalse((self.root / 'escape材料清单.docx').exists())
+
+    def test_bootstrap_assigns_storage_to_bank_appuser(self):
+        data = self.root / 'data'
+        (data / 'gateway_storage').mkdir(parents=True)
+        database = data / 'gateway_storage' / 'gateway.sqlite3'
+        database.write_bytes(b'old-data')
+        account = SimpleNamespace(pw_uid=12345, pw_gid=12346)
+        with mock.patch('deploy.k8s.bootstrap.pwd.getpwnam', return_value=account), \
+                mock.patch('deploy.k8s.bootstrap.shutil.chown') as chown:
+            prepare(data, rules_archive())
+        chown.assert_any_call(data / 'gateway_storage', user=12345, group=12346)
+        chown.assert_any_call(database, user=12345, group=12346)
+        self.assertEqual(database.read_bytes(), b'old-data')
+
+
+class BankBuildTests(DeliveryFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        for name in ('Dockerfile.bank', '.dockerignore'):
+            shutil.copyfile(ROOT / name, self.root / name)
+        for name in ('gateway', 'service', 'tools'):
+            shutil.copytree(ROOT / name, self.root / name, ignore=shutil.ignore_patterns('__pycache__'))
+        self.wheels = self.root / 'downloads'
+        self.wheels.mkdir()
+        (self.wheels / 'fixture-1.0-py3-none-any.whl').write_bytes(b'offline-wheel')
+        # Inputs outside the allowlist must never enter the transferable source package.
+        (self.root / 'gateway.env').write_text('PRIVATE=do-not-package')
+        (self.root / 'gateway' / 'local.env').write_text('PRIVATE=do-not-package')
+        self.archive = prepare_bank(self.wheels, 'test-bank', root=self.root)
+        unpack = self.root / 'server-33'
+        unpack.mkdir()
+        with tarfile.open(self.archive) as archive:
+            archive.extractall(unpack, filter='data')
+        self.source = unpack / 'material-checklist-bank'
+        self.bindir = self.root / 'mock-bin'
+        self.bindir.mkdir()
+        self.log = self.root / 'build-calls.jsonl'
+        docker = self.bindir / 'docker'
+        docker.write_text('#!' + sys.executable + '\n' + r'''
+import json, os, subprocess, sys
+from pathlib import Path
+args=sys.argv[1:]
+with open(os.environ['BUILD_LOG'],'a') as f: f.write(json.dumps(args)+'\n')
+if args[0]=='save': sys.stdout.buffer.write(b'saved-bank-image')
+if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
+    mount=args[args.index('-v')+1].removesuffix(':/workspace')
+    start=args.index('tools/build_k8s_delivery.py')
+    sys.exit(subprocess.call([sys.executable,'-B',*args[start:]],cwd=mount))
+''')
+        docker.chmod(0o755)
+        for name in ('python3', 'git'):
+            path = self.bindir / name
+            path.write_text('#!/bin/sh\necho "宿主机不应调用此工具" >&2\nexit 99\n')
+            path.chmod(0o755)
+        self.env = os.environ | {'PATH': str(self.bindir) + os.pathsep + os.environ['PATH'],
+                                 'BUILD_LOG': str(self.log)}
+        self.env.pop('VERSION', None)
+        self.env.pop('BANK_BASE', None)
+
+    def test_source_bundle_has_linux_wheels_and_no_local_config(self):
+        with tarfile.open(self.archive) as archive:
+            names = archive.getnames()
+        self.assertTrue(all(n.startswith('material-checklist-bank/') for n in names))
+        self.assertFalse(any(n.endswith('gateway.env') or n.endswith('local.env') for n in names))
+        self.assertTrue((self.source / 'Dockerfile.bank').is_file())
+        self.assertFalse((self.source / 'Dockerfile').exists())
+        self.assertEqual((self.source / 'BANK_VERSION').read_text().strip(), 'test-bank')
+        self.assertFalse(any(n.endswith(('.sha256', 'SHA256SUMS')) for n in names))
+        self.assertFalse(self.archive.with_name(self.archive.name + '.sha256').exists())
+        self.assertTrue(list((self.source / 'offline' / 'wheelhouse').glob('*.whl')))
+
+    def test_bank_build_uses_prepared_version_base_and_container_python(self):
+        result = subprocess.run(['bash', 'deploy/k8s/make-package.sh'], cwd=self.source,
+                                env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        build_call = next(c for c in calls if c[0] == 'build')
+        self.assertEqual(Path(build_call[build_call.index('-f') + 1]).resolve(),
+                         (self.source / 'Dockerfile.bank').resolve())
+        self.assertIn('BANK_BASE=10.208.11.33/k8s/kylinv10sp3-python312-ssh:latest', build_call)
+        self.assertNotIn('--provenance=false', build_call)
+        self.assertFalse(any(c[0] == 'push' for c in calls))
+        output = self.source / 'dist' / 'k8s-test-bank'
+        self.assertEqual({p.name for p in output.iterdir()}, {
+            'run-all.sh', 'material-checklist-deploy.tar.gz', 'material-checklist-images.tar.gz'})
+
+    def test_missing_wheels_stop_before_docker_build(self):
+        for wheel in (self.source / 'offline' / 'wheelhouse').glob('*.whl'):
+            wheel.unlink()
+        result = subprocess.run(['bash', 'deploy/k8s/make-package.sh'], cwd=self.source,
+                                env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.log.exists())
 
 
 @unittest.skipUnless(importlib.util.find_spec('yaml'), '需要现有 requirements-build.txt 中的 PyYAML')
@@ -251,19 +353,13 @@ class ScriptFlowTests(DeliveryFixture, unittest.TestCase):
         archive_path = self.output / 'material-checklist-deploy.tar.gz'
         with tarfile.open(archive_path, 'w:gz') as archive:
             archive.add(self.deploy, arcname='material-checklist-deploy')
-        from tools.build_k8s_delivery import digest
-        sums = self.output / 'SHA256SUMS'
-        lines = sums.read_text().splitlines()
-        sums.write_text('\n'.join(digest(archive_path) + '  ' + archive_path.name
-                                 if line.endswith('  ' + archive_path.name) else line
-                                 for line in lines) + '\n')
         shutil.rmtree(self.deploy)
         self.run_script()
         self.assertTrue((self.deploy / '.runtime' / 'material-checklist.yaml').is_file())
 
-    def test_tampered_image_is_not_loaded(self):
-        part = next(self.output.glob('*.part-*'))
-        part.write_bytes(b'broken')
+    def test_missing_images_stop_before_docker_load(self):
+        for part in self.output.glob('*.part-*'):
+            part.unlink()
         self.run_script(success=False)
         self.assertFalse(any(c[0] == 'docker' for c in self.calls()))
 

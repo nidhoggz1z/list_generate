@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 import os
+import pwd
 import shutil
 import sys
 import tarfile
@@ -57,6 +58,19 @@ def prepare(root, stream, *, backup=False, update=False):
             print('保留现有非空规则目录')
         RuleStore(rules).files()
     storage.mkdir(exist_ok=True)
+    # 麒麟镜像以 appuser 运行；准备 Pod 以 root 写入节点盘，按用户名授权。
+    try:
+        account = pwd.getpwnam('appuser')
+    except KeyError:
+        # 原 Docker 镜像仍以 root 运行，不要求存在 appuser。
+        account = None
+    if account is not None:
+        shutil.chown(storage, user=account.pw_uid, group=account.pw_gid)
+        for directory, directories, files in os.walk(storage):
+            for name in directories + files:
+                path = Path(directory) / name
+                if not path.is_symlink():
+                    shutil.chown(path, user=account.pw_uid, group=account.pw_gid)
 
 
 if __name__ == '__main__':

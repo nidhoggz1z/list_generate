@@ -1,0 +1,24 @@
+# 与 loan-assistant 一致：在 11.33 使用行内麒麟 Python 3.12 基座离线构建。
+ARG BANK_BASE=10.208.11.33/k8s/kylinv10sp3-python312-ssh:latest
+FROM ${BANK_BASE}
+
+USER root
+WORKDIR /app
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+COPY gateway/requirements.txt ./requirements.txt
+COPY offline/wheelhouse /tmp/wheelhouse
+RUN python3 -c "import sys; assert sys.version_info[:2] == (3, 12), '需要 Python 3.12'" \
+    && python3 -m venv .venv \
+    && .venv/bin/pip install --no-cache-dir --no-index --find-links=/tmp/wheelhouse -r requirements.txt \
+    && rm -rf /tmp/wheelhouse
+COPY gateway/ ./gateway/
+COPY service/ ./service/
+RUN (id -u appuser >/dev/null 2>&1 || useradd --create-home --uid 10001 appuser) \
+    && chown -R appuser /app
+USER appuser
+LABEL com.material-checklist.component="dify-wrapper-and-rule-reader"
+EXPOSE 8000
+ENTRYPOINT []
+CMD ["python", "-B", "-m", "uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

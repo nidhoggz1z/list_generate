@@ -5,6 +5,7 @@ __pycache__/
 
 .local-test/
 dist/
+offline/
 
 workflows/
 HiAgent/

@@ -6,13 +6,11 @@ INSTALL_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 cd "$INSTALL_DIR"
 [[ $# == 0 ]] || { echo '用法：bash run-all.sh（无需参数）' >&2; exit 1; }
 command -v kubectl >/dev/null
-command -v sha256sum >/dev/null
 export KUBE_CONTEXT=${KUBE_CONTEXT:-$(kubectl config current-context)}
 echo "==> 使用 context=${KUBE_CONTEXT}，部署到 agent2"
-[[ -f material-checklist-deploy.tar.gz && -f SHA256SUMS ]] || {
-    echo '缺少 material-checklist-deploy.tar.gz 或 SHA256SUMS' >&2; exit 1;
+[[ -f material-checklist-deploy.tar.gz ]] || {
+    echo '缺少 material-checklist-deploy.tar.gz' >&2; exit 1;
 }
-sha256sum -c SHA256SUMS
 if [[ ! -d material-checklist-deploy ]]; then
     tar -xzf material-checklist-deploy.tar.gz
 fi

@@ -1,6 +1,6 @@
 # 材料清单高码离线部署
 
-K8s 部署使用独立命名空间 `agent2`，按服务组织 YAML，并通过 `bash /haw/lwh-install/run-all.sh` 完成解包、镜像导入、Harbor 推送和服务启动。打包、配置、验证和升级步骤见 [K8s 部署说明](deploy/k8s/README.md)。以下为原 Docker 离线部署方式。
+K8s 部署使用独立命名空间 `agent2`：本地采集离线依赖和源码，在 11.33 使用专用 `Dockerfile.bank` 与麒麟基座构建，再通过 `bash /haw/lwh-install/run-all.sh` 完成解包、镜像导入、Harbor 推送和服务启动。打包、配置、验证和升级步骤见 [K8s 部署说明](deploy/k8s/README.md)。以下为原 Docker 离线部署方式。
 
 本包使用现有 Dify／HiAgent 平台，只部署 material-checklist-dify:1.0 高码镜像、规则资源和运维脚本。不包含工作流、模型供应商配置或真实凭据。不要使用原“文件检索”的 file-retrieval 镜像代替。
 

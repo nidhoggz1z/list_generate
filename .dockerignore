@@ -1,5 +1,9 @@
 **
 !Dockerfile
+!Dockerfile.bank
+!offline/
+!offline/wheelhouse/
+!offline/wheelhouse/*.whl
 !gateway/
 !gateway/**
 !service/

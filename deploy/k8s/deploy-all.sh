@@ -40,12 +40,13 @@ NODE_STATE=$(k get node "$NODE" -o 'jsonpath={.spec.unschedulable}{"|"}{.status.
 mkdir -p "$SCRIPT_DIR/.runtime"
 printf '%s\n' "$NODE" > "$SCRIPT_DIR/.node-name"
 say "固定数据节点：$NODE"
-RULES_SHA=$(sha "$SCRIPT_DIR/rules.sha256")
+# 直接计算版本摘要供幂等发布使用，不生成或要求校验文件。
+RULES_SHA=$(cd "$SCRIPT_DIR" && find rules -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum | awk '{print $1}')
 if [[ -n "$EXISTING" && "$UPDATE_RULES" == false ]]; then
     RULES_SHA=$(k get deployment "$APP" -o 'jsonpath={.spec.template.metadata.annotations.material-checklist/rules-sha}')
     [[ -n "$RULES_SHA" ]] || fail '已有部署缺少规则版本记录，请核对后使用 --update-rules'
 fi
-[[ "$RULES_SHA" =~ ^[a-f0-9]{64}$ ]] || fail '规则校验记录无效'
+[[ "$RULES_SHA" =~ ^[a-f0-9]{64}$ ]] || fail '规则版本记录无效'
 sed -e "s/FIXME_WORKER/$NODE/g" -e "s/FIXME_RULES_SHA/$RULES_SHA/g" "$MANIFEST" > "$SCRIPT_DIR/.runtime/pending.yaml"
 RELEASE_SHA=$(sha "$SCRIPT_DIR/.runtime/pending.yaml")
 sed "s/FIXME_MANIFEST_SHA/$RELEASE_SHA/g" "$SCRIPT_DIR/.runtime/pending.yaml" > "$SCRIPT_DIR/.runtime/material-checklist.yaml"
@@ -95,11 +96,15 @@ metadata:
 spec:
   restartPolicy: Never
   automountServiceAccountToken: false
+  securityContext:
+    supplementalGroups: [0]
   nodeSelector:
     kubernetes.io/hostname: $NODE
   containers:
   - name: prepare
     image: $IMAGE
+    securityContext:
+      runAsUser: 0
     command: [python, -c, "import time; time.sleep(1800)"]
     resources:
       requests: {cpu: 10m, memory: 64Mi}
@@ -118,7 +123,6 @@ EOF
     PREPARE_ARGS=()
     [[ -z "$EXISTING" ]] || PREPARE_ARGS+=(--backup)
     [[ "$UPDATE_RULES" == false ]] || PREPARE_ARGS+=(--update-rules)
-    (cd "$SCRIPT_DIR" && sha256sum -c rules.sha256 >/dev/null)
     tar -C "$SCRIPT_DIR/rules" -cf - . | k exec -i "$HELPER" -- python -c "$(cat "$SCRIPT_DIR/bootstrap.py")" "${PREPARE_ARGS[@]}"
     cleanup
     trap - EXIT
