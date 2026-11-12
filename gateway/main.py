@@ -46,7 +46,7 @@ def create_app(settings=None, *, run_workflow=None, callback_transport=None):
 
     @app.middleware('http')
     async def require_json(request,call_next):
-        if (request.method=='POST' and request.url.path=='/api/v1/tasks'
+        if (request.method=='POST' and request.scope['path'].removeprefix(request.scope.get('root_path',''))=='/api/v1/tasks'
                 and request.headers.get('content-type','').split(';',1)[0].strip().lower()!='application/json'):
             return JSONResponse(status_code=400,content={'reply':'请求必须使用 application/json'})
         return await call_next(request)

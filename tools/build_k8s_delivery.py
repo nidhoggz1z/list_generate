@@ -1,0 +1,116 @@
+"""Assemble the independent agent2 delivery using only the standard library."""
+import argparse
+import hashlib
+from pathlib import Path
+import re
+import shutil
+import tarfile
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGE = 'material-checklist-deploy'
+SCRIPTS = ('common.sh', 'install-images.sh', 'push-loaded-images-from-list.sh',
+           'deploy-all.sh', 'verify.sh', 'bootstrap.py', 'README.md')
+
+
+def digest(path):
+    with Path(path).open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def rule_files(root=ROOT):
+    files = sorted(path for path in (root / 'rules').iterdir()
+                   if path.is_file() and not path.name.startswith('~$') and
+                   (path.name.endswith('材料清单.docx') or path.name == '话术库对应材料.xlsx'))
+    if not any(p.name.endswith('材料清单.docx') for p in files) or not any(
+            p.name == '话术库对应材料.xlsx' for p in files):
+        raise ValueError('rules/ 必须包含 Word 材料清单和话术库对应材料.xlsx')
+    if any(p.is_symlink() for p in files):
+        raise ValueError('规则文件不能使用符号链接')
+    return files
+
+
+def build(image, version, *, root=ROOT, split_bytes=1024**3):
+    if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', version):
+        raise ValueError('版本号无效')
+    if split_bytes <= 0:
+        raise ValueError('分片大小必须大于零')
+    files = rule_files(root)
+    image = Path(image)
+    if not image.is_file() or image.stat().st_size == 0:
+        raise ValueError('缺少保存的压缩镜像')
+    output = root / 'dist' / ('k8s-' + version)
+    if output.exists():
+        raise ValueError('输出目录已存在，请先备份移走')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    image_ref = '10.208.11.33/agents/shb/material-checklist-dify:' + version
+    with tempfile.TemporaryDirectory(prefix='.k8s-package-', dir=output.parent) as temporary:
+        work = Path(temporary)
+        stage = work / PACKAGE
+        stage.mkdir(mode=0o700)
+        for name in SCRIPTS:
+            shutil.copyfile(root / 'deploy' / 'k8s' / name, stage / name)
+        shutil.copyfile(root / 'deploy' / 'k8s' / 'run-all.sh', work / 'run-all.sh')
+        (stage / 'k8s').mkdir()
+        shutil.copyfile(root / 'k8s' / 'sit' / '00-namespace.yaml', stage / 'k8s' / '00-namespace.yaml')
+        manifest = (root / 'k8s' / 'sit' / 'material-checklist.yaml').read_text(encoding='utf-8')
+        source_image = '10.208.11.33/agents/shb/material-checklist-dify:1.0'
+        if manifest.count(source_image) != 1:
+            raise ValueError('源清单镜像引用不符合预期')
+        (stage / 'k8s' / 'material-checklist.yaml').write_text(
+            manifest.replace(source_image, image_ref), encoding='utf-8')
+        (stage / 'rules').mkdir()
+        for path in files:
+            shutil.copyfile(path, stage / 'rules' / path.name)
+        (stage / 'rules.sha256').write_text(''.join(
+            digest(stage / 'rules' / p.name) + '  rules/' + p.name + '\n' for p in files), encoding='utf-8')
+        (stage / 'images-sit.txt').write_text(image_ref + '\n', encoding='utf-8')
+        (stage / 'VERSION').write_text(version + '\n', encoding='utf-8')
+        image_name = 'material-checklist-images.tar.gz'
+        (stage / 'image.sha256').write_text(digest(image) + '  ' + image_name + '\n', encoding='utf-8')
+        archive_path = work / (PACKAGE + '.tar.gz')
+        with tarfile.open(archive_path, 'w:gz') as archive:
+            for path in sorted(p for p in stage.rglob('*') if p.is_file()):
+                info = archive.gettarinfo(str(path), arcname=PACKAGE + '/' + path.relative_to(stage).as_posix())
+                info.uid = info.gid = 0
+                info.uname = info.gname = ''
+                info.mode = 0o755 if path.suffix == '.sh' else 0o600
+                with path.open('rb') as source:
+                    archive.addfile(info, source)
+        shutil.rmtree(stage)
+        if image.stat().st_size <= split_bytes:
+            shutil.copyfile(image, work / image_name)
+        else:
+            with image.open('rb') as source:
+                index = 0
+                while source.tell() < image.stat().st_size:
+                    with (work / (image_name + '.part-' + str(index).zfill(4))).open('wb') as part:
+                        remaining = split_bytes
+                        while remaining:
+                            block = source.read(min(1024**2, remaining))
+                            if not block:
+                                break
+                            part.write(block)
+                            remaining -= len(block)
+                    index += 1
+        (work / 'SHA256SUMS').write_text(''.join(
+            digest(p) + '  ' + p.name + '\n' for p in sorted(work.iterdir()) if p.is_file()), encoding='utf-8')
+        for path in work.iterdir():
+            path.chmod(0o755 if path.suffix == '.sh' else 0o600)
+        work.rename(output)
+    print('K8s 交付目录：' + str(output))
+    return output
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check-rules', action='store_true')
+    parser.add_argument('--image', type=Path)
+    parser.add_argument('--version')
+    args = parser.parse_args()
+    if args.check_rules:
+        rule_files()
+    elif args.image and args.version:
+        build(args.image, args.version)
+    else:
+        parser.error('需要 --check-rules 或 --image 与 --version')
