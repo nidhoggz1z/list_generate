@@ -9,11 +9,11 @@ metadata:
     app.kubernetes.io/part-of: material-checklist
 type: Opaque
 stringData:
-  DIFY_API_URL: "<完整HiAgent同步接口URL>"
-  DIFY_API_KEY: "<已发布应用的APIKey>"
-  CALLBACK_URL: "<PI环境CP回调完整URL>"
-  IMAGE_PLATFORM_DOWNLOAD_BASE_URL: ""
-  IMAGE_PLATFORM_AU: ""
+  DIFY_API_URL: "http://10.208.116.136:32300/api/proxy/api/v1/sync_run_app_workflow"
+  DIFY_API_KEY: "dbnfobr7c2iu3srqa59g"
+  CALLBACK_URL: "http://10.240.184.200:9090/NLSC/LdsAiTaskESBFunctionApi/0.1.0/ldaAiTaskResultCallback"
+  IMAGE_PLATFORM_DOWNLOAD_BASE_URL: "http://10.240.85.47:9001/smartDocument/API/File"
+  IMAGE_PLATFORM_AU: "0672"
 ---
 apiVersion: apps/v1
 kind: Deployment
