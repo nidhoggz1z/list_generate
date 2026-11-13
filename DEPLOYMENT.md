@@ -76,7 +76,7 @@ curl -s http://127.0.0.1:18008/health
 curl -s http://10.240.99.210:18008/health
 ```
 
-docker ps 的 Image 是单数。publish 过滤无结果不能排除宿主机进程、host 网络容器或反向代理。先确认占用者，再由现场运维停用或迁移旧服务，释放 18008 后启动本包。不要盲目停止其他项目。新版健康响应包含 `service: material-checklist-gateway`、`status: healthy` 和并发数 2。
+docker ps 的 Image 是单数。publish 过滤无结果不能排除宿主机进程、host 网络容器或反向代理。先确认占用者，再由现场运维停用或迁移旧服务，释放 18008 后启动本包。不要盲目停止其他项目。新版健康响应包含 `service: material-checklist-gateway`、`status: healthy` 和并发数 5。
 
 ## 存储与工作流
 
@@ -93,6 +93,6 @@ FileNotFoundError 表示目录不存在或挂载错误；PermissionError 表示�
 
 上一版 release.sh 为保留现场维护内容，已存在 rules 时不会覆盖，即使该目录为空；本次修正版会向原空目录内补入包内规则，不替换目录本身，已有非空目录仍不覆盖。已部署旧版时，确认现场规则为空后，可在已校验的新包解压目录执行 `cp -a ./rules/. /data/deploy_material-checklist-dify/rules/` 恢复；不要删除 gateway_storage 或改动 API Key。若修改了绑定挂载目录本身，应重新运行 start.sh；仅在原目录补入文件后，目录接口会实时读取，通常无需重启。
 
-rules 和 gateway.env 只读挂载；gateway_storage 持久保存输入、结果、队列数据库和按日日志。只允许一个容器、一个 uvicorn worker 使用同一存储；进程内最多两个工作流并发，其余持久排队。同业务只回调最新任务。停服后完整备份 gateway_storage，重启时未完成任务标记失败，不自动重跑。
+rules 和 gateway.env 只读挂载；gateway_storage 持久保存输入、结果、队列数据库和按日日志。只允许一个容器、一个 uvicorn worker 使用同一存储；进程内最多五个工作流并发，其余持久排队。同业务只回调最新任务。停服后完整备份 gateway_storage，重启时未完成任务标记失败，不自动重跑。
 
 `bash stop.sh` 停止本项目。升级前排空队列并备份配置、规则、存储与工作流；回退时配对恢复镜像和工作流。目标 Dify 继续使用现有模型供应商和 MinerU 凭据。健康检查和合成离线测试不能代替现场工作流、真实影像和 CP 联调。

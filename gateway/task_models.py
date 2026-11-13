@@ -113,6 +113,13 @@ class CreateResponse(TaskIdentity):
     autoReply: Literal['task created']
 
 
+class TaskRequestReceived(Contract):
+    bsnEvtId: Identifier | None
+    userNo: Identifier | None
+    taskId: Identifier
+    autoReply: NonBlank
+
+
 class FileContentRequest(Contract):
     fileName: NonBlank
 

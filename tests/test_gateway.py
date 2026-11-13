@@ -54,7 +54,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             while not predicate():
                 await asyncio.sleep(0.001)
 
-    async def test_two_active_third_waits_and_queue_survives_reopen(self):
+    async def test_five_active_sixth_waits_and_queue_survives_reopen(self):
         from gateway.worker import TaskWorker
         gates, started, sent = {}, [], []
         async def run(record):
@@ -62,7 +62,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             started.append(record['taskId'])
             await gates[key].wait()
             return workflow_outputs(record['businessData'])
-        for n in range(3):
+        for n in range(6):
             row = self.store.accept(business(str(n), 'T'+str(n)))
             gates[row['generationId']] = asyncio.Event()
         # The queue is durable; the new object reads the same SQLite database.
@@ -71,14 +71,14 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         worker = TaskWorker(self.store, run, sent.append)
         worker.start()
         try:
-            await self.spin(lambda: len(started)==2)
-            self.assertEqual(started, ['T0','T1'])
-            self.assertEqual(self.store.counts(), {'PENDING':1,'PROCESSING':2})
+            await self.spin(lambda: len(started)==5)
+            self.assertEqual(started, [f'T{n}' for n in range(5)])
+            self.assertEqual(self.store.counts(), {'PENDING':1,'PROCESSING':5})
             next(iter(gates.values())).set()
-            await self.spin(lambda: len(started)==3)
+            await self.spin(lambda: len(started)==6)
             for gate in gates.values():
                 gate.set()
-            await self.spin(lambda: len(sent)==3)
+            await self.spin(lambda: len(sent)==6)
             self.assertEqual([m['itemId'] for m in sent[0]['result']['items'][0]['categories'][0]['children'][0]['materials']], ['R0001'])
             self.assertEqual(sent[0]['result']['items'][0]['categories'][0]['materials'][0]['itemId'], 'R0002')
         finally:
@@ -150,6 +150,43 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(requests[0].headers['g-cnsm-side-srl-id'], requests[0].headers['g-fullchnl-srl-id'])
         self.assertNotIn('data', body)
 
+    async def test_success_callback_formats_only_the_outgoing_materials(self):
+        from gateway.callback import TaskCallback
+        from gateway.material_tree import iter_materials
+        from gateway.result_format import build_callback
+        from gateway.worker import validate_outputs
+
+        record = self.store.accept(business())
+        self.store.claim()
+        result = workflow_result(record)
+        first, second = iter_materials(result['data']['items'])
+        first.update(materialName='[产品甲]一级目录-营业执照（原件）', publishDate='2026-09-29',
+                     sourceSystem='系统.A。', publishDepartment='发布。部门.')
+        second.update(materialName='[产品甲][核查]名称[产品甲]', publishDate='2026-09-30 11:22:33',
+                      sourceSystem='无句号', publishDepartment='部门。 ')
+        callback_body = build_callback(record['taskId'], 'DONE', result['data']['generatedAt'],
+                                       iter_materials(result['data']['items']))
+        stored, checked = validate_outputs(record, dict(result=result, callbackResult=callback_body))
+        saved = self.store.finish(record['generationId'], result=stored)
+        original = copy.deepcopy(checked)
+        requests = []
+
+        def receive(request):
+            requests.append(json.loads(request.content))
+            return httpx.Response(200)
+
+        async with TaskCallback(self.store, transport=httpx.MockTransport(receive)) as callback:
+            await callback.send(dict(saved, callbackResult=checked))
+        expected = copy.deepcopy(original)
+        expected['checkListItems'][0].update(
+            materialName='一级目录-营业执照（原件）', publishDate='2026-09-29 00:00:00',
+            sourceSystem='系统.A', publishDepartment='发布。部门')
+        expected['checkListItems'][1].update(materialName='[核查]名称[产品甲]',
+                                             publishDate='2026-09-30 11:22:33', publishDepartment='部门 ')
+        self.assertEqual(requests, [expected])
+        self.assertEqual(checked, original)
+        self.assertEqual(self.store.get(record['generationId'])['result'], stored)
+
     async def test_create_accepts_without_pdf_network_and_invalid_input_does_not_replace(self):
         from gateway.main import create_app
         from gateway.config import Settings
@@ -158,7 +195,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         callback_url = "https://cp.example.test/v2/callback"
 
         def receive(request):
-            callbacks.append(str(request.url))
+            callbacks.append((str(request.url), json.loads(request.content)))
             return httpx.Response(200)
         async def run(record):
             started.append(record)
@@ -171,16 +208,36 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app),base_url='http://gateway') as client:
                 response = await client.post('/api/v1/tasks', json=business())
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.json()['autoReply'], 'task created')
+                self.assertEqual(response.json(), {'bsnEvtId': 'B1', 'userNo': 'U1',
+                                                   'taskId': 'T1', 'autoReply': 'task created'})
                 await self.spin(lambda:len(started)==1)
                 generation = started[0]['generationId']
                 bad = await client.post('/api/v1/tasks', json=business(task='BAD')|{'taskId':''})
                 self.assertEqual(bad.status_code, 422)
-                for missing in ('prcsStage','aspdNm'):
-                    incomplete = business(task='INCOMPLETE')
-                    del incomplete[missing]
-                    rejected = await client.post('/api/v1/tasks', json=incomplete)
-                    self.assertEqual(rejected.status_code, 422)
+                incomplete = business(task='INCOMPLETE')
+                del incomplete['aspdNm']
+                incomplete.update(userNo=None, prcsStage='  ', replyImageUrl='')
+                try:
+                    received = await client.post('/api/v1/tasks', json=incomplete)
+                    self.assertEqual(received.status_code, 200)
+                    message = '参数 userNo、aspdNm、prcsStage、replyImageUrl 缺失，无法创建任务。'
+                    self.assertEqual(received.json(), {'bsnEvtId': 'B1', 'userNo': None,
+                                                       'taskId': 'INCOMPLETE', 'autoReply': message})
+                    await self.spin(lambda: len(callbacks) == 1)
+                    url, body = callbacks[0]
+                    self.assertEqual(url, callback_url)
+                    self.assertEqual(set(body), {'taskId', 'taskStatus', 'generatedAt', 'errorMsg', 'checkListItems'})
+                    self.assertEqual(body['taskId'], 'INCOMPLETE')
+                    self.assertEqual(body['taskStatus'], 'FAILED')
+                    self.assertEqual(body['errorMsg'], received.json()['autoReply'])
+                    self.assertEqual(body['checkListItems'], [])
+                    self.assertEqual(app.state.store.counts(), {'PROCESSING': 1})
+                    self.assertEqual(len(started), 1)
+                    invalid = await client.post('/api/v1/tasks', json=business(task='INVALID') | {'aspdNm': 123})
+                    self.assertEqual(invalid.status_code, 422)
+                except BaseException:
+                    gate.set()
+                    raise
                 wrong_type=await client.post('/api/v1/tasks',content=json.dumps(business()),headers={'Content-Type':'text/plain'})
                 self.assertEqual(wrong_type.status_code,400)
                 self.assertTrue(app.state.store.is_latest(generation))
@@ -195,8 +252,9 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                     response = await client.post('/v1/checklist-files/content', json={'fileName': value})
                     self.assertEqual(response.status_code, code)
                 gate.set()
-                await self.spin(lambda: len(callbacks) == 1)
-                self.assertEqual(callbacks, [callback_url])
+                await self.spin(lambda: len(callbacks) == 2)
+                self.assertEqual([(url, body['taskId'], body['taskStatus']) for url, body in callbacks],
+                                 [(callback_url, 'INCOMPLETE', 'FAILED'), (callback_url, 'T1', 'DONE')])
 
 
 class DifyClientTests(unittest.IsolatedAsyncioTestCase):
