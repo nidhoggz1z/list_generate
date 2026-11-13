@@ -54,7 +54,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             while not predicate():
                 await asyncio.sleep(0.001)
 
-    async def test_two_active_third_waits_and_queue_survives_reopen(self):
+    async def test_five_active_sixth_waits_and_queue_survives_reopen(self):
         from gateway.worker import TaskWorker
         gates, started, sent = {}, [], []
         async def run(record):
@@ -62,7 +62,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             started.append(record['taskId'])
             await gates[key].wait()
             return workflow_outputs(record['businessData'])
-        for n in range(3):
+        for n in range(6):
             row = self.store.accept(business(str(n), 'T'+str(n)))
             gates[row['generationId']] = asyncio.Event()
         # The queue is durable; the new object reads the same SQLite database.
@@ -71,14 +71,14 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         worker = TaskWorker(self.store, run, sent.append)
         worker.start()
         try:
-            await self.spin(lambda: len(started)==2)
-            self.assertEqual(started, ['T0','T1'])
-            self.assertEqual(self.store.counts(), {'PENDING':1,'PROCESSING':2})
+            await self.spin(lambda: len(started)==5)
+            self.assertEqual(started, [f'T{n}' for n in range(5)])
+            self.assertEqual(self.store.counts(), {'PENDING':1,'PROCESSING':5})
             next(iter(gates.values())).set()
-            await self.spin(lambda: len(started)==3)
+            await self.spin(lambda: len(started)==6)
             for gate in gates.values():
                 gate.set()
-            await self.spin(lambda: len(sent)==3)
+            await self.spin(lambda: len(sent)==6)
             self.assertEqual([m['itemId'] for m in sent[0]['result']['items'][0]['categories'][0]['children'][0]['materials']], ['R0001'])
             self.assertEqual(sent[0]['result']['items'][0]['categories'][0]['materials'][0]['itemId'], 'R0002')
         finally:

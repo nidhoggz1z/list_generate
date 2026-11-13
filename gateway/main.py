@@ -1,4 +1,4 @@
-"""POST /api/v1/tasks -> durable queue -> two Dify runs -> latest-only callback."""
+"""POST /api/v1/tasks -> durable queue -> concurrent workflow runs -> latest-only callback."""
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
@@ -33,7 +33,7 @@ def create_app(settings=None, *, run_workflow=None, callback_transport=None):
                     if store.is_latest(record['generationId']):
                         callback.notify(record)
                 worker.start()
-                event('包装服务启动',concurrency=2)
+                event('包装服务启动',concurrency=worker.concurrency)
                 try:
                     yield
                 finally:
@@ -100,7 +100,7 @@ def create_app(settings=None, *, run_workflow=None, callback_transport=None):
 
     @app.get('/health')
     async def health():
-        return dict(status='healthy',service='material-checklist-gateway',concurrency=2,tasks=app.state.store.counts())
+        return dict(status='healthy',service='material-checklist-gateway',concurrency=TaskWorker.concurrency,tasks=app.state.store.counts())
 
     @app.get('/v1/checklist-files')
     def list_checklist_files():

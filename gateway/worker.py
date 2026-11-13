@@ -1,4 +1,4 @@
-"""Two FIFO consumers. Older generations keep running but cannot publish."""
+"""FIFO consumers. Older generations keep running but cannot publish."""
 import asyncio
 from copy import deepcopy
 from datetime import datetime
@@ -53,6 +53,8 @@ def validate_outputs(record, outputs):
 
 
 class TaskWorker:
+    concurrency = 5
+
     def __init__(self, store, run_workflow, notify_terminal):
         self.store,self.run_workflow,self.notify_terminal = store,run_workflow,notify_terminal
         self.wake = asyncio.Event()
@@ -60,7 +62,10 @@ class TaskWorker:
 
     def start(self):
         if not self.tasks:
-            self.tasks = [asyncio.create_task(self.consume(),name=f'dify-worker-{n}') for n in (1,2)]
+            self.tasks = [
+                asyncio.create_task(self.consume(), name=f'dify-worker-{n}')
+                for n in range(1, self.concurrency + 1)
+            ]
 
     def notify(self):
         self.wake.set()
