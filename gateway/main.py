@@ -13,7 +13,7 @@ from .client import DifyClient
 from .config import Settings
 from .service_log import RequestLogMiddleware,daily_logging,event
 from .store import StorageOwnership,TaskStore
-from .task_models import CreateTaskRequest,CreateResponse,FileContentRequest
+from .task_models import CreateTaskRequest,CreateResponse,FileContentRequest,TaskRequestReceived
 from .worker import TaskWorker
 
 
@@ -27,6 +27,7 @@ def create_app(settings=None, *, run_workflow=None, callback_transport=None):
                     store,callback_url=config.callback_url,transport=callback_transport) as callback:
                 worker = TaskWorker(store,run_workflow or client.run,callback.notify)
                 app.state.store,app.state.worker,app.state.settings = store,worker,config
+                app.state.callback = callback
                 app.state.rules = RuleStore(config.rules_dir)
                 for record in store.recover_interrupted():
                     if store.is_latest(record['generationId']):
@@ -54,10 +55,32 @@ def create_app(settings=None, *, run_workflow=None, callback_transport=None):
     @app.exception_handler(RequestValidationError)
     async def invalid(request,error):
         # Never echo the request body, URL, extra fields or provider credentials.
-        code = 400 if any(e['type']=='json_invalid' for e in error.errors()) else 422
+        errors = error.errors()
+        code = 400 if any(e['type']=='json_invalid' for e in errors) else 422
+        body = error.body
+        if code == 422 and request.method == 'POST' and request.scope['path'].removeprefix(request.scope.get('root_path','')) == '/api/v1/tasks' and isinstance(body, dict):
+            task_id = body.get('taskId')
+            if isinstance(task_id, str) and task_id.strip():
+                missing = []
+                for field in ('bsnEvtId', 'userNo', 'aspdNm', 'prcsStage', 'replyImageUrl'):
+                    value = body.get(field)
+                    if value is None or isinstance(value, str) and not value.strip():
+                        missing.append(field)
+                if missing and all(e['loc'] in [('body', field) for field in missing] for e in errors):
+                    task_id = task_id.strip()
+                    request.scope['log_identity'] = {'taskId': task_id}
+                    reason = f'参数 {"、".join(missing)} 缺失，无法创建任务。'
+                    request.app.state.callback.notify_rejected(task_id, reason)
+                    received = TaskRequestReceived(
+                        bsnEvtId=None if 'bsnEvtId' in missing else body['bsnEvtId'],
+                        userNo=None if 'userNo' in missing else body['userNo'],
+                        taskId=task_id,
+                        autoReply=reason,
+                    )
+                    return JSONResponse(content=received.model_dump())
         return JSONResponse(status_code=code,content={'reply':'JSON 格式或业务字段无效'})
 
-    @app.post('/api/v1/tasks',response_model=CreateResponse)
+    @app.post('/api/v1/tasks',response_model=CreateResponse | TaskRequestReceived)
     async def create_task(body:CreateTaskRequest,request:Request):
         request.scope['log_identity'] = dict(bsnEvtId=body.bsnEvtId,taskId=body.taskId)
         if 'application/json' not in request.headers.get('content-type','').lower():
