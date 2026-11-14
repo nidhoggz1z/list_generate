@@ -51,3 +51,7 @@ bash deploy/k8s/make-package.sh
 ```bash
 bash run-all.sh
 ```
+
+支持一直使用 `v1`：主服务和临时准备 Pod 均使用 `imagePullPolicy: Always`，启动时检查 Harbor 中该 tag 的当前镜像。已有部署即使 YAML 未变化，也会先检查任务队列，确认无待处理或运行中任务后重启服务；执行前暂停调用方的新任务，单副本重启期间服务会短暂中断。配置有变化时沿用原有的备份、停止和初始化流程。
+
+每次发布须替换完整的新镜像包；若使用分片，先备份移走安装目录内旧的 `material-checklist-images.tar.gz` 和旧分片，再复制新分片。安装脚本优先导入整包，留下旧整包会重新推送旧镜像。同 tag 更新后，镜像名仍为 `v1`，请通过 Pod 的 `imageID` 或容器内实际文件核对更新。

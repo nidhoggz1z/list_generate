@@ -68,9 +68,11 @@ if verb in ('apply','create'):
         assert obj['metadata']['namespace']=='agent2'
         if obj['kind']=='Deployment':
             assert obj['spec']['template']['spec']['securityContext']['supplementalGroups']==[0]
+            assert obj['spec']['template']['spec']['containers'][0]['imagePullPolicy']=='Always'
         if obj['kind']=='Pod':
             assert obj['spec']['securityContext']['supplementalGroups']==[0]
             assert obj['spec']['containers'][0]['securityContext']['runAsUser']==0
+            assert obj['spec']['containers'][0]['imagePullPolicy']=='Always'
         state.setdefault('objects',{})[obj['kind'].lower()+'/'+obj['metadata']['name']]=obj
     done('created')
 if verb=='scale':
@@ -440,6 +442,36 @@ class ScriptFlowTests(DeliveryFixture, unittest.TestCase):
         self.run_script('deploy-all.sh')
         self.assertTrue(any('scale' in c for c in self.calls()[start:]))
         self.assertTrue(list((self.deploy / 'backups').glob('*/secret.yaml')))
+
+    def test_same_tag_rerun_pushes_then_restarts_without_reinitializing_data(self):
+        self.run_script()
+        before = json.loads(self.statefile.read_text())['objects']['deployment/material-checklist-gateway']
+        start = len(self.calls())
+        self.run_script()
+        calls = self.calls()[start:]
+        push = next(i for i, c in enumerate(calls) if c[:2] == ['docker', 'push'])
+        queue = next(i for i, c in enumerate(calls) if 'exec' in c and '仍有未完成任务' in c[-1])
+        apply = next(i for i, c in enumerate(calls) if 'apply' in c and
+                     '--dry-run=server' not in c and c[-1].endswith('/.runtime/material-checklist.yaml'))
+        restart = next(i for i, c in enumerate(calls) if c[-3:] ==
+                       ['rollout', 'restart', 'deployment/material-checklist-gateway'])
+        ready = next(i for i, c in enumerate(calls) if 'rollout' in c and 'status' in c)
+        self.assertLess(push, queue)
+        self.assertLess(queue, apply)
+        self.assertLess(apply, restart)
+        self.assertLess(restart, ready)
+        self.assertFalse(any('scale' in c or 'create' in c for c in calls))
+        after = json.loads(self.statefile.read_text())['objects']['deployment/material-checklist-gateway']
+        self.assertEqual(before, after)
+
+    def test_same_tag_restart_refuses_busy_queue_before_changing_resources(self):
+        self.run_script()
+        self.change_state(busy=True)
+        start = len(self.calls())
+        self.run_script('deploy-all.sh', success=False)
+        calls = self.calls()[start:]
+        self.assertFalse(any('restart' in c or 'scale' in c or 'create' in c or
+                             ('apply' in c and '--dry-run=server' not in c) for c in calls))
 
     def test_fixed_node_failure_does_not_select_another_node(self):
         self.run_script()

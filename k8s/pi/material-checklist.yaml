@@ -48,7 +48,7 @@ spec:
       containers:
       - name: gateway
         image: FIXME_IMAGE_FROM_LIST
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         args:
         - python
         - -B

@@ -47,7 +47,7 @@ spec:
       containers:
       - name: gateway
         image: 10.208.11.33/agents/shb/material-checklist-dify:v1
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         args:
         - python
         - -B

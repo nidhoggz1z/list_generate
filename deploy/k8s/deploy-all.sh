@@ -57,12 +57,14 @@ if [[ -n "$EXISTING" ]]; then
     OLD_SHA=$(k get deployment "$APP" -o 'jsonpath={.spec.template.metadata.annotations.material-checklist/manifest-sha}')
     k apply --dry-run=server -f "$RENDERED" >/dev/null
 fi
-if [[ -n "$EXISTING" && "$OLD_SHA" != "$RELEASE_SHA" ]]; then
+if [[ -n "$EXISTING" ]]; then
     REPLICAS=$(k get deployment "$APP" -o 'jsonpath={.spec.replicas}')
     if [[ "$REPLICAS" != 0 ]]; then
         say '升级前请确保调用方已暂停新任务；检查队列是否排空'
         k exec "deployment/$APP" -- python -c 'import json, urllib.request; h=json.load(urllib.request.urlopen("http://127.0.0.1:8000/health",timeout=10)); q=h["tasks"]; assert not(q.get("PENDING",0) or q.get("PROCESSING",0)), "仍有未完成任务，停止升级"'
     fi
+fi
+if [[ -n "$EXISTING" && "$OLD_SHA" != "$RELEASE_SHA" ]]; then
     BACKUP="$SCRIPT_DIR/backups/$(date -u +%Y%m%dT%H%M%S)-$$"
     mkdir -p "$BACKUP"
     k get deployment,service,ingress "$APP" -o yaml > "$BACKUP/resources.yaml"
@@ -103,6 +105,7 @@ spec:
   containers:
   - name: prepare
     image: $IMAGE
+    imagePullPolicy: Always
     securityContext:
       runAsUser: 0
     command: [python, -c, "import time; time.sleep(1800)"]
@@ -128,6 +131,10 @@ EOF
     trap - EXIT
 fi
 k apply -f "$RENDERED" >/dev/null
+if [[ -n "$EXISTING" && "$OLD_SHA" == "$RELEASE_SHA" ]]; then
+    say '配置未变，重启服务以加载 Harbor 中当前 tag 的镜像'
+    k rollout restart "deployment/$APP"
+fi
 k rollout status "deployment/$APP" --timeout=900s
 k exec "deployment/$APP" -- python -c 'from gateway.config import Settings; from service.app import RuleStore; s=Settings.from_env(); s.require_dify(); print("规则数：",len(RuleStore(s.rules_dir).files()))'
 k get pods -l "app=$APP" -o wide
