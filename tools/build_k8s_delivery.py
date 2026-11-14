@@ -13,8 +13,8 @@ SCRIPTS = ('common.sh', 'install-images.sh', 'push-loaded-images-from-list.sh',
 
 
 def environment_config(root, environment):
-    if environment not in ('sit', 'pi', 'prod'):
-        raise ValueError('环境必须为 sit、pi 或 prod')
+    if environment not in ('sit', 'pi', 'uat', 'prod'):
+        raise ValueError('环境必须为 sit、pi、uat 或 prod')
     image_list = root / 'deploy' / 'k8s' / f'images-{environment}.txt'
     image_ref = image_list.read_text(encoding='utf-8').strip()
     if 'FIXME_' in image_ref or not re.fullmatch(
@@ -161,7 +161,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check-rules', action='store_true')
     parser.add_argument('--check-config', action='store_true')
-    parser.add_argument('--environment', choices=('sit', 'pi', 'prod'), default='sit')
+    parser.add_argument('--environment', choices=('sit', 'pi', 'uat', 'prod'), default='sit')
     parser.add_argument('--prepare-bank', action='store_true')
     parser.add_argument('--wheelhouse', type=Path)
     parser.add_argument('--image', type=Path)

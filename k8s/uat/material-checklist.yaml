@@ -1,0 +1,155 @@
+# 交付前或解包后在本文件填写现场配置。不要提交真实凭据。
+# image 由打包脚本按 deploy/k8s/images-uat.txt 的完整镜像名自动替换。
+apiVersion: v1
+kind: Secret
+metadata:
+  name: material-checklist-config
+  namespace: agent2
+  labels:
+    app.kubernetes.io/part-of: material-checklist
+type: Opaque
+stringData:
+  DIFY_API_URL: "http://10.208.116.136:32300/api/proxy/api/v1/sync_run_app_workflow"
+  DIFY_API_KEY: "dbnfobr7c2iu3srqa59g"
+  CALLBACK_URL: "http://10.240.184.200:9090/NLSC/LdsAiTaskESBFunctionApi/0.1.0/ldaAiTaskResultCallback"
+  IMAGE_PLATFORM_DOWNLOAD_BASE_URL: "http://10.240.85.47:9001/smartDocument/API/File"
+  IMAGE_PLATFORM_AU: "0672"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: material-checklist-gateway
+  namespace: agent2
+  labels:
+    app.kubernetes.io/part-of: material-checklist
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: material-checklist-gateway
+  template:
+    metadata:
+      labels:
+        app: material-checklist-gateway
+        app.kubernetes.io/part-of: material-checklist
+      annotations:
+        material-checklist/manifest-sha: FIXME_MANIFEST_SHA
+        material-checklist/rules-sha: FIXME_RULES_SHA
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: FIXME_WORKER
+      automountServiceAccountToken: false
+      securityContext:
+        supplementalGroups: [0]
+      terminationGracePeriodSeconds: 120
+      containers:
+      - name: gateway
+        image: FIXME_IMAGE_FROM_LIST
+        imagePullPolicy: IfNotPresent
+        args:
+        - python
+        - -B
+        - -m
+        - uvicorn
+        - gateway.main:app
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8000"
+        - --workers
+        - "1"
+        - --root-path
+        - /material-checklist
+        envFrom:
+        - secretRef:
+            name: material-checklist-config
+        ports:
+        - name: http
+          containerPort: 8000
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        volumeMounts:
+        - name: rules
+          mountPath: /app/rules
+          readOnly: true
+        - name: storage
+          mountPath: /app/gateway_storage
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          tcpSocket:
+            port: http
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 6
+      volumes:
+      - name: rules
+        hostPath:
+          path: /haw/shb/data/material-checklist/rules
+          type: Directory
+      - name: storage
+        hostPath:
+          path: /haw/shb/data/material-checklist/gateway_storage
+          type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: material-checklist-gateway
+  namespace: agent2
+  labels:
+    app.kubernetes.io/part-of: material-checklist
+spec:
+  type: ClusterIP
+  selector:
+    app: material-checklist-gateway
+  ports:
+  - name: http
+    port: 8000
+    targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: material-checklist-gateway
+  namespace: agent2
+  labels:
+    app.kubernetes.io/part-of: material-checklist
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /material-checklist(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: material-checklist-gateway
+            port:
+              number: 8000

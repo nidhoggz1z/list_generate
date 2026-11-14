@@ -4,7 +4,7 @@ umask 077
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 DEPLOY_ENV=sit
 [[ ! -f "$SCRIPT_DIR/ENVIRONMENT" ]] || DEPLOY_ENV=$(cat "$SCRIPT_DIR/ENVIRONMENT")
-[[ "$DEPLOY_ENV" == sit || "$DEPLOY_ENV" == pi || "$DEPLOY_ENV" == prod ]] || { echo '部署包环境必须为 sit、pi 或 prod' >&2; exit 1; }
+[[ "$DEPLOY_ENV" == sit || "$DEPLOY_ENV" == pi || "$DEPLOY_ENV" == uat || "$DEPLOY_ENV" == prod ]] || { echo '部署包环境必须为 sit、pi、uat 或 prod' >&2; exit 1; }
 NS=agent2
 APP=material-checklist-gateway
 OWNER=material-checklist

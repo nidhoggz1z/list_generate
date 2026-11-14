@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -120,8 +121,9 @@ class DeliveryFixture:
         image_ref = f'harbor-{environment}.example:8443/team/material-checklist-dify:v7'
         (self.root / 'deploy' / 'k8s' / f'images-{environment}.txt').write_text(image_ref + '\n')
         manifest = self.root / 'k8s' / environment / 'material-checklist.yaml'
-        manifest.write_text(manifest.read_text().replace(
-            f'<{environment.upper()}环境CP回调完整URL>', f'http://cp-{environment}.example/callback'))
+        manifest.write_text(re.sub(
+            r'^  CALLBACK_URL:.*$', f'  CALLBACK_URL: "http://cp-{environment}.example/callback"',
+            manifest.read_text(), flags=re.MULTILINE))
         return image_ref
 
 
@@ -296,8 +298,8 @@ if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
             self.assertEqual(archive.extractfile('material-checklist-deploy/images-sit.txt').read(),
                              b'10.208.11.33/agents/shb/material-checklist-dify:v1\n')
 
-    def test_pi_and_prod_use_exact_image_from_environment_list(self):
-        for environment in ('pi', 'prod'):
+    def test_pi_uat_and_prod_use_exact_image_from_environment_list(self):
+        for environment in ('pi', 'uat', 'prod'):
             with self.subTest(environment=environment):
                 image_ref = self.configure_environment(environment)
                 archive_path = prepare_bank(self.wheels, 'v2', root=self.root, environment=environment)
@@ -395,8 +397,8 @@ class ScriptFlowTests(DeliveryFixture, unittest.TestCase):
                 self.assertEqual(call[1:5], ['--context', 'sit-test', '--namespace', 'agent2'])
         self.run_script('verify.sh')
 
-    def test_pi_and_prod_entry_push_and_deploy_image_from_environment_list(self):
-        for environment in ('pi', 'prod'):
+    def test_pi_uat_and_prod_entry_push_and_deploy_image_from_environment_list(self):
+        for environment in ('pi', 'uat', 'prod'):
             with self.subTest(environment=environment):
                 image_ref = self.configure_environment(environment)
                 self.output = build(self.image, 'v2', root=self.root, environment=environment)

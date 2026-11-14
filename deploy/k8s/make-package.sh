@@ -9,7 +9,7 @@ if [[ -z "${DEPLOY_ENV:-}" ]]; then
         DEPLOY_ENV=sit
     fi
 fi
-[[ "$DEPLOY_ENV" == sit || "$DEPLOY_ENV" == pi || "$DEPLOY_ENV" == prod ]] || { echo '环境必须为 sit、pi 或 prod' >&2; exit 1; }
+[[ "$DEPLOY_ENV" == sit || "$DEPLOY_ENV" == pi || "$DEPLOY_ENV" == uat || "$DEPLOY_ENV" == prod ]] || { echo '环境必须为 sit、pi、uat 或 prod' >&2; exit 1; }
 IMAGE=$(cat "$ROOT/deploy/k8s/images-$DEPLOY_ENV.txt")
 [[ "$IMAGE" != *FIXME_* && "$IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9./:_-]+:[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || { echo "请在 deploy/k8s/images-$DEPLOY_ENV.txt 填写单个带 tag 的完整镜像地址" >&2; exit 1; }
 [[ -f "$ROOT/k8s/$DEPLOY_ENV/material-checklist.yaml" && -f "$ROOT/k8s/$DEPLOY_ENV/00-namespace.yaml" ]] || { echo "缺少 $DEPLOY_ENV 环境的 K8s 清单" >&2; exit 1; }
@@ -21,7 +21,7 @@ if [[ -z "${VERSION:-}" ]]; then
     fi
 fi
 BANK_BASE=${BANK_BASE:-10.208.11.33/k8s/kylinv10sp3-python312-ssh:latest}
-[[ $# == 0 ]] || { echo '用法：DEPLOY_ENV=sit|pi|prod bash deploy/k8s/make-package.sh' >&2; exit 1; }
+[[ $# == 0 ]] || { echo '用法：DEPLOY_ENV=sit|pi|uat|prod bash deploy/k8s/make-package.sh' >&2; exit 1; }
 [[ "$VERSION" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || { echo '版本号无效' >&2; exit 1; }
 RELEASE=$VERSION
 [[ "$DEPLOY_ENV" == sit ]] || RELEASE="$DEPLOY_ENV-$VERSION"
