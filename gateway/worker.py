@@ -23,6 +23,9 @@ def adapt_result(record, output):
     else:
         for index, material in enumerate(iter_materials(data['items']),1):
             material['itemId'] = f'R{index:04d}'
+    generated_at = data.get('generatedAt')
+    if isinstance(generated_at, str) and generated_at[10:11] == ' ':
+        data['generatedAt'] = generated_at[:10] + 'T' + generated_at[11:]
     return TaskResult.model_validate(data).model_dump(mode='json')
 
 
@@ -45,7 +48,13 @@ def validate_outputs(record, outputs):
             stored = adapt_result(record, result)
             expected = build_callback(record['taskId'], 'DONE', stored['generatedAt'],
                                       iter_materials(stored['items']))
-        if callback != expected:
+        expected_with_spaces = dict(expected)
+        expected_with_spaces['generatedAt'] = expected['generatedAt'].replace('T', ' ', 1)
+        expected_with_spaces['checkListItems'] = [
+            dict(item, publishDate=item['publishDate'].replace('T', ' ', 1))
+            for item in expected['checkListItems']
+        ]
+        if callback not in (expected, expected_with_spaces):
             raise ValueError()
         return stored, callback
     except (ValueError, TypeError, KeyError, AttributeError):

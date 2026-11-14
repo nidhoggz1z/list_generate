@@ -187,6 +187,54 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(checked, original)
         self.assertEqual(self.store.get(record['generationId'])['result'], stored)
 
+    async def test_business_data_object_uses_the_same_task_contract(self):
+        from gateway.config import Settings
+        from gateway.main import create_app
+        from gateway.store import TaskStore
+
+        started, callbacks = [], []
+        async def run(record):
+            started.append(record['businessData'])
+            return workflow_outputs(record['businessData'])
+
+        def receive(request):
+            callbacks.append(json.loads(request.content))
+            return httpx.Response(200)
+
+        app = create_app(Settings(storage_root=Path(self.directory.name)), run_workflow=run,
+                         callback_transport=httpx.MockTransport(receive))
+        prefix = '/material-checklist'
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app, root_path=prefix)
+            async with httpx.AsyncClient(transport=transport, base_url='http://gateway') as client:
+                for route in ('/api/v1/tasks', prefix + '/api/v1/tasks'):
+                    with self.subTest(route=route):
+                        payload = dict(business(task='T1114'), aspdNm='', ctrAspdNm='产品甲',
+                                       payoutList=[], subcontractList=[])
+                        rejected = await client.post(route, json={'businessData': payload})
+                        self.assertEqual(rejected.status_code, 200)
+                        message = '参数 aspdNm 缺失，无法创建任务。'
+                        self.assertEqual(rejected.json(), dict(bsnEvtId='B1', userNo='U1',
+                                                               taskId='T1114', autoReply=message))
+                        await self.spin(lambda: len(callbacks) == 1)
+                        sent = callbacks.pop()
+                        self.assertEqual(sent['taskId'], 'T1114')
+                        self.assertEqual(sent['taskStatus'], 'FAILED')
+                        self.assertEqual(sent['errorMsg'], message)
+                        self.assertEqual(sent['checkListItems'], [])
+                        self.assertEqual(TaskStore(Path(self.directory.name)).counts(), {})
+                        self.assertEqual(started, [])
+                invalid = await client.post(prefix + '/api/v1/tasks',
+                                            json={'businessData': dict(payload, userNo=123)})
+                self.assertEqual(invalid.status_code, 422)
+                unwrapped = dict(payload, aspdNm='产品甲')
+                created = await client.post(prefix + '/api/v1/tasks', json={'businessData': unwrapped})
+                self.assertEqual(created.status_code, 200)
+                self.assertEqual(created.json()['autoReply'], 'task created')
+                await self.spin(lambda: len(callbacks) == 1)
+                self.assertEqual(started, [unwrapped])
+                self.assertEqual(callbacks[0]['taskStatus'], 'DONE')
+
     async def test_create_accepts_without_pdf_network_and_invalid_input_does_not_replace(self):
         from gateway.main import create_app
         from gateway.config import Settings

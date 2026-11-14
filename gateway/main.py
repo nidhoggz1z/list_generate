@@ -2,10 +2,12 @@
 from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import FastAPI,Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BeforeValidator
 
 from service.app import InvalidFileName, RuleStore
 from .callback import TaskCallback
@@ -13,8 +15,28 @@ from .client import DifyClient
 from .config import Settings
 from .service_log import RequestLogMiddleware,daily_logging,event
 from .store import StorageOwnership,TaskStore
-from .task_models import CreateTaskRequest,CreateResponse,FileContentRequest,TaskRequestReceived
+from .task_models import BusinessObject, CreateTaskRequest, CreateResponse, FileContentRequest, TaskRequestReceived
 from .worker import TaskWorker
+
+
+TASKS_PATH = '/api/v1/tasks'
+
+
+class WrappedTaskRequest(BusinessObject):
+    businessData: CreateTaskRequest
+
+
+def task_business_data(body):
+    if isinstance(body, dict) and isinstance(body.get('businessData'), dict):
+        if not any(name in body for name, field in CreateTaskRequest.model_fields.items() if field.is_required()):
+            return body['businessData']
+    return body
+
+
+TaskRequestBody = Annotated[
+    CreateTaskRequest,
+    BeforeValidator(task_business_data, json_schema_input_type=CreateTaskRequest | WrappedTaskRequest),
+]
 
 
 def create_app(settings=None, *, run_workflow=None, callback_transport=None):
@@ -47,7 +69,8 @@ def create_app(settings=None, *, run_workflow=None, callback_transport=None):
 
     @app.middleware('http')
     async def require_json(request,call_next):
-        if (request.method=='POST' and request.scope['path'].removeprefix(request.scope.get('root_path',''))=='/api/v1/tasks'
+        root_path = request.scope.get('root_path', '').rstrip('/')
+        if (request.method=='POST' and request.scope['path'] in (TASKS_PATH, root_path + TASKS_PATH)
                 and request.headers.get('content-type','').split(';',1)[0].strip().lower()!='application/json'):
             return JSONResponse(status_code=400,content={'reply':'请求必须使用 application/json'})
         return await call_next(request)
@@ -57,8 +80,8 @@ def create_app(settings=None, *, run_workflow=None, callback_transport=None):
         # Never echo the request body, URL, extra fields or provider credentials.
         errors = error.errors()
         code = 400 if any(e['type']=='json_invalid' for e in errors) else 422
-        body = error.body
-        if code == 422 and request.method == 'POST' and request.scope['path'].removeprefix(request.scope.get('root_path','')) == '/api/v1/tasks' and isinstance(body, dict):
+        body = task_business_data(error.body)
+        if code == 422 and request.scope.get('endpoint') is create_task and isinstance(body, dict):
             task_id = body.get('taskId')
             if isinstance(task_id, str) and task_id.strip():
                 missing = []
@@ -80,8 +103,8 @@ def create_app(settings=None, *, run_workflow=None, callback_transport=None):
                     return JSONResponse(content=received.model_dump())
         return JSONResponse(status_code=code,content={'reply':'JSON 格式或业务字段无效'})
 
-    @app.post('/api/v1/tasks',response_model=CreateResponse | TaskRequestReceived)
-    async def create_task(body:CreateTaskRequest,request:Request):
+    @app.post(TASKS_PATH,response_model=CreateResponse | TaskRequestReceived)
+    async def create_task(body:TaskRequestBody,request:Request):
         request.scope['log_identity'] = dict(bsnEvtId=body.bsnEvtId,taskId=body.taskId)
         if 'application/json' not in request.headers.get('content-type','').lower():
             return JSONResponse(status_code=400,content={'reply':'请求必须使用 application/json'})
