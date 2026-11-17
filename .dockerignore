@@ -8,5 +8,10 @@
 !gateway/**
 !service/
 !service/**
+!rules/
+!rules/*.docx
+!rules/*.xlsx
+rules/~$*
+rules/._*
 **/__pycache__
 **/*.pyc

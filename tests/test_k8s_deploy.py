@@ -232,6 +232,7 @@ import json, os, subprocess, sys
 from pathlib import Path
 args=sys.argv[1:]
 with open(os.environ['BUILD_LOG'],'a') as f: f.write(json.dumps(args)+'\n')
+if args[:2]==['image','inspect'] and os.environ.get('BUILD_MISSING_BASE'): sys.exit(1)
 if args[0]=='save': sys.stdout.buffer.write(b'saved-bank-image')
 if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
     mount=args[args.index('-v')+1].removesuffix(':/workspace')
@@ -278,6 +279,14 @@ if args[0]=='run' and 'tools/build_k8s_delivery.py' in args:
         output = self.source / 'dist' / 'k8s-test-bank'
         self.assertEqual({p.name for p in output.iterdir()}, {
             'run-all.sh', 'material-checklist-deploy.tar.gz', 'material-checklist-images.tar.gz'})
+
+    def test_missing_local_base_stops_before_build(self):
+        result = subprocess.run(['bash', 'deploy/k8s/make-package.sh'], cwd=self.source,
+                                env=dict(self.env, BUILD_MISSING_BASE='1'), capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('缺少本机基座镜像', result.stderr)
+        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
+        self.assertFalse(any(c[0] in ('build', 'pull') for c in calls))
 
     def test_missing_wheels_stop_before_docker_build(self):
         for wheel in (self.source / 'offline' / 'wheelhouse').glob('*.whl'):

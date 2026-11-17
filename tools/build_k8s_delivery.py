@@ -88,7 +88,7 @@ def prepare_bank(wheelhouse, version, *, root=ROOT, environment='sit'):
                     archive.addfile(info, source)
         archive_path.replace(output)
         output.chmod(0o600)
-    print('上传到 11.33 的准备包：' + str(output))
+    print('上传到目标环境构建机的准备包：' + str(output))
     return output
 
 

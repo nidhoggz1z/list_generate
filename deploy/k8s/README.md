@@ -55,3 +55,13 @@ bash run-all.sh
 支持一直使用 `v1`：主服务和临时准备 Pod 均使用 `imagePullPolicy: Always`，启动时检查 Harbor 中该 tag 的当前镜像。已有部署即使 YAML 未变化，也会先检查任务队列，确认无待处理或运行中任务后重启服务；执行前暂停调用方的新任务，单副本重启期间服务会短暂中断。配置有变化时沿用原有的备份、停止和初始化流程。
 
 每次发布须替换完整的新镜像包；若使用分片，先备份移走安装目录内旧的 `material-checklist-images.tar.gz` 和旧分片，再复制新分片。安装脚本优先导入整包，留下旧整包会重新推送旧镜像。同 tag 更新后，镜像名仍为 `v1`，请通过 Pod 的 `imageID` 或容器内实际文件核对更新。
+
+## 统一 PI V2 的内置规则镜像
+
+两个 Dockerfile 现在将规则打入 `/app/rules`，仅接收 Word 材料清单和话术库 Excel，构建时校验全部规则可读；麒麟镜像以 appuser 完成检查。PI 镜像清单使用 `10.240.24.11/agents/shb/material-checklist-dify:v2`。准备包已包含规则及校验模块。
+
+在联网机准备 `DEPLOY_ENV=pi VERSION=v2 bash deploy/k8s/prepare-bank.sh`，然后在 PI 的 `10.240.24.11` 构建。将更新后的物料镜像与 loan-assistant 镜像统一 `docker save`、压缩并切片。交付仓库的 V2 PI 默认不再需要本项目的 `material-checklist-deploy.tar.gz`，运行于 `agent`，直接使用镜像规则，保留任务数据目录。请使用统一部署包入口；本目录独立部署脚本仍为兼容旧 `agent2` 外置规则流程，不用于此次统一 PI 部署。
+
+本次 PI 的构建和部署都在 `10.240.24.11`，无需到 11.33 构建。构建脚本只使用已加载的本地麒麟基座，缺失时停止；`BANK_BASE` 默认值中的 10.208.11.33 是镜像标签的一部分，不代表执行机器。若本地基座名称不同，通过 `BANK_BASE=<完整镜像名>` 覆盖。
+
+本次 PI 的源码准备包和统一部署物料不要求 `.sha256`、`SHA256SUMS` 或手工 SHA256 校验步骤；直接解压构建，保留脚本内部规则/配置摘要及压缩包完整性检查。

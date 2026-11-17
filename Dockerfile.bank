@@ -1,4 +1,4 @@
-# 与 loan-assistant 一致：在 11.33 使用行内麒麟 Python 3.12 基座离线构建。
+# 与 loan-assistant 一致：在目标构建机使用行内麒麟 Python 3.12 基座离线构建。
 ARG BANK_BASE=10.208.11.33/k8s/kylinv10sp3-python312-ssh:latest
 FROM ${BANK_BASE}
 
@@ -15,10 +15,15 @@ RUN python3 -c "import sys; assert sys.version_info[:2] == (3, 12), '需要 Pyth
     && rm -rf /tmp/wheelhouse
 COPY gateway/ ./gateway/
 COPY service/ ./service/
+COPY rules/ ./rules/
+RUN find /app/rules -type d -exec chmod 755 {} + \
+    && find /app/rules -type f -exec chmod 644 {} +
 RUN (id -u appuser >/dev/null 2>&1 || useradd --create-home --uid 10001 appuser) \
     && chown -R appuser /app
-USER appuser
+# 与部署时 supplementalGroups: [0] 保持一致，确保可执行基座的 Python。
+USER appuser:0
+RUN /app/.venv/bin/python -B -m service.validate_rules
 LABEL com.material-checklist.component="dify-wrapper-and-rule-reader"
 EXPOSE 8000
 ENTRYPOINT []
-CMD ["python", "-B", "-m", "uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["/app/.venv/bin/python", "-B", "-m", "uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

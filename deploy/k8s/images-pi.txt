@@ -1,1 +1,1 @@
-10.240.24.11/agents/shb/material-checklist-dify:v1
+10.240.24.11/agents/shb/material-checklist-dify:v2

@@ -8,6 +8,10 @@ COPY gateway/requirements.txt ./requirements.txt
 RUN python -m pip install --no-cache-dir -r requirements.txt --index-url "${PIP_INDEX_URL}"
 COPY gateway/ ./gateway/
 COPY service/ ./service/
+COPY rules/ ./rules/
+RUN find /app/rules -type d -exec chmod 755 {} + \
+    && find /app/rules -type f -exec chmod 644 {} +
+RUN python -B -m service.validate_rules
 LABEL com.material-checklist.component="dify-wrapper-and-rule-reader"
 EXPOSE 8000
 CMD ["python", "-B", "-m", "uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

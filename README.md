@@ -11,3 +11,7 @@
 构建离线包时使用 bash huanban_tar.sh --without-workflow --no-split。包内包含 rules/ 的 Word 清单和话术库 Excel。首次安装使用包内模板初始化配置，升级保留现场配置。工作流在 HiAgent 单独部署，目标环境需要能访问同步接口和 CP 回调。部署步骤见 [部署说明](DEPLOYMENT.md)。
 
 K8s 独立部署使用 `agent2`：本地执行 `bash deploy/k8s/prepare-bank.sh` 下载依赖、准备源码包，上传到 11.33 后执行包内 `bash deploy/k8s/make-package.sh`，使用 `Dockerfile.bank` 和麒麟基座构建，再通过 `bash /haw/lwh-install/run-all.sh` 部署。服务配置直接填写在服务 YAML 的 Secret 中，规则自动随包交付。详见 [K8s 部署说明](deploy/k8s/README.md)。
+
+统一 PI V2 已支持镜像内置规则：规则与镜像一起发布，交付仓库的 PI 清单直接读取 `/app/rules`，任务及日志单独持久化。修改规则后需重建物料镜像并重新导出统一镜像包；构建与交付说明见 [K8s 部署说明](deploy/k8s/README.md#统一-pi-v2-的内置规则镜像)。
+
+PI V2 源码准备包上传到 `10.240.24.11` 后在该机重新构建物料镜像，再导出统一镜像包；本次 PI 不在 11.33 构建。构建前确认本机已有麒麟基座，可用 BANK_BASE 指定其完整镜像名。
