@@ -48,7 +48,7 @@ CALLBACK_URL=https://cp-primary.example/callback https://cp-backup.example/callb
 
 CP 回调遇到连接失败、读取超时或中途断开时切换到下一个地址，发出的正文和 C/F 流水号保持一致。每个回调地址最多使用 10 秒。完整收到 HTTP 响应后记录状态，完成本次推送尝试。缺少 CALLBACK_URL 或留空时，沿用现有地址。
 `http://10.240.184.200:9090/NLSC/LdsAiTaskESBFunctionApi/0.1.0/ldaAiTaskResultCallback`。
-回调正文使用格式 B 的五个字段。`checkListItems[].publishDate` 发送 `YYYY-MM-DD`，`generatedAt` 保留原时间格式。失败返回 FAILED、错误信息和空清单。
+CP 回调正文包含 `taskId`、`taskStCd`、`generatedAt`、`errorMsg` 和 `paramsJson`。`taskStCd` 为数字，成功发送 `1`，失败发送 `2`。`paramsJson` 是材料数组的 JSON 字符串，其中的 `publishDate` 发送 `YYYY-MM-DD`。`generatedAt` 使用北京时间 `YYYY-MM-DDTHH:mm:ss`。失败时发送错误信息，`paramsJson` 为字符串 `"[]"`。HiAgent 输出给高码的格式 B 仍包含 `taskStatus` 和材料数组 `checkListItems`。
 
 任务出队后，共用 1800 秒处理预算，包括影像下载、HiAgent 调用和 CP 回调。高码提前给回调预留尝试时间，排队耗时单独记录。通过 `taskId` 可关联任务、影像尝试、HiAgent 请求、结果校验和回调日志。
 

@@ -1,6 +1,7 @@
 """Flat terminal callback with a latest-submission check before sending."""
 import asyncio
 from datetime import datetime
+import json
 import logging
 import re
 from time import perf_counter
@@ -14,6 +15,7 @@ from .result_format import build_callback
 from .config import DEFAULT_CALLBACK_URL, endpoint_urls
 
 CALLBACK_ATTEMPT_SECONDS = 10
+CP_TASK_STATUS_CODES = {'DONE': 1, 'FAILED': 2}
 
 def bank_time(value=None):
     value = datetime.now(BEIJING) if value is None else datetime.fromisoformat(value).astimezone(BEIJING)
@@ -92,6 +94,14 @@ class TaskCallback:
             event('任务终态推送异常',record,level=logging.WARNING,error_type=type(error).__name__)
 
     async def send_to_endpoints(self, record, check_latest, body, headers):
+        items = body['checkListItems']
+        payload = {
+            'taskId': body['taskId'],
+            'taskStCd': CP_TASK_STATUS_CODES[body['taskStatus']],
+            'generatedAt': body['generatedAt'].replace(' ', 'T', 1),
+            'errorMsg': body['errorMsg'],
+            'paramsJson': json.dumps(items, ensure_ascii=False, separators=(',', ':')),
+        }
         loop = asyncio.get_running_loop()
         deadline = record.get('taskDeadline', loop.time() + CALLBACK_ATTEMPT_SECONDS * len(self.urls))
         for attempt, url in enumerate(self.urls, 1):
@@ -104,10 +114,10 @@ class TaskCallback:
             started = perf_counter()
             status_code = None
             event('任务终态开始推送', record, attempt=attempt, endpoint_count=len(self.urls),
-                  status=body['taskStatus'], material_count=len(body['checkListItems']))
+                  status=body['taskStatus'], material_count=len(items))
             try:
                 async with asyncio.timeout_at(min(deadline, loop.time() + CALLBACK_ATTEMPT_SECONDS)):
-                    async with self.http.stream('POST', url, headers=headers, json=body) as response:
+                    async with self.http.stream('POST', url, headers=headers, json=payload) as response:
                         status_code = response.status_code
                         if not response.is_stream_consumed:
                             async for _ in response.aiter_raw():

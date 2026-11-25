@@ -143,9 +143,12 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests), 1)
         body = json.loads(requests[0].content)
         self.assertEqual(body['taskId'], 'NEW')
-        self.assertEqual(body['taskStatus'], 'FAILED')
+        self.assertIs(type(body['taskStCd']), int)
+        self.assertEqual(body['taskStCd'], 2)
+        self.assertNotIn('taskStatus', body)
         self.assertEqual(body['errorMsg'], '新任务失败')
-        self.assertEqual(body['checkListItems'], [])
+        self.assertEqual(body['paramsJson'], '[]')
+        self.assertNotIn('checkListItems', body)
         self.assertEqual(requests[0].headers['g-svc-cd'], '152517942')
         self.assertNotEqual(requests[0].headers['g-cnsm-side-srl-id'], requests[0].headers['g-fullchnl-srl-id'])
         self.assertNotIn('data', body)
@@ -161,11 +164,15 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         result = workflow_result(record)
         first, second = iter_materials(result['data']['items'])
         first.update(materialName='[产品甲]一级目录-营业执照（原件）', publishDate='2026-09-29',
-                     sourceSystem='系统.A。', publishDepartment='发布。部门.')
+                     sourceSystem='系统.A。', policyBasis='条款 "一"\n附件\\清单', publishDepartment='发布。部门.')
         second.update(materialName='[产品甲][核查]名称[产品甲]', publishDate='2026-09-30 11:22:33',
                       sourceSystem='无句号', publishDepartment='部门。 ')
         callback_body = build_callback(record['taskId'], 'DONE', result['data']['generatedAt'],
                                        iter_materials(result['data']['items']))
+        generated_at = callback_body['generatedAt']
+        callback_body['generatedAt'] = generated_at.replace('T', ' ', 1)
+        for item in callback_body['checkListItems']:
+            item['publishDate'] = item['publishDate'].replace('T', ' ', 1)
         stored, checked = validate_outputs(record, dict(result=result, callbackResult=callback_body))
         saved = self.store.finish(record['generationId'], result=stored)
         original = copy.deepcopy(checked)
@@ -183,7 +190,14 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             sourceSystem='系统.A', publishDepartment='发布。部门')
         expected['checkListItems'][1].update(materialName='[核查]名称[产品甲]',
                                              publishDate='2026-09-30', publishDepartment='部门 ')
-        self.assertEqual(requests, [expected])
+        sent, = requests
+        self.assertNotIn('checkListItems', sent)
+        self.assertNotIn('taskStatus', sent)
+        self.assertIs(type(sent['taskStCd']), int)
+        self.assertIn('营业执照', sent['paramsJson'])
+        self.assertEqual(json.loads(sent.pop('paramsJson')), expected.pop('checkListItems'))
+        del expected['taskStatus']
+        self.assertEqual(sent, dict(expected, generatedAt=generated_at, taskStCd=1))
         self.assertEqual(checked, original)
         self.assertEqual(self.store.get(record['generationId'])['result'], stored)
 
@@ -209,6 +223,8 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([request.url.host for request in seen], ['primary.test', 'backup.test'])
         self.assertEqual(seen[0].content, seen[1].content)
         self.assertEqual(seen[0].headers['g-fullchnl-srl-id'], seen[1].headers['g-fullchnl-srl-id'])
+        self.assertEqual(json.loads(seen[1].content)['paramsJson'], '[]')
+        self.assertEqual(json.loads(seen[1].content)['taskStCd'], 2)
 
     async def test_image_failover_passes_one_download_to_existing_workflow(self):
         from gateway.config import Settings
@@ -250,7 +266,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             response = await workflow_http.post('http://gateway.test/api/v1/tasks', json=business())
             self.assertEqual(response.status_code, 200)
             await self.spin(lambda: len(callbacks) == 1)
-            self.assertEqual(callbacks[0]['taskStatus'], 'DONE')
+            self.assertEqual(callbacks[0]['taskStCd'], 1)
             self.assertEqual((await workflow_http.get(image_urls[0])).status_code, 404)
         self.assertEqual(seen, [('GET', 'images-a.test'), ('GET', 'images-b.test'), ('POST', 'hiagent.test')])
 
@@ -276,6 +292,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await http.post('http://gateway.test/api/v1/tasks', json=business())).status_code, 200)
                 await self.spin(lambda: len(callbacks) == 1)
         self.assertEqual(callbacks[0]['errorMsg'], 'HiAgent 请求超时')
+        self.assertEqual(callbacks[0]['taskStCd'], 2)
         self.assertTrue(any('queue_ms=' in line and 'taskId="T1"' in line for line in log.output))
         self.assertTrue(any('任务处理阶段失败' in line and 'TimeoutError' in line for line in log.output))
 
@@ -311,9 +328,9 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                         await self.spin(lambda: len(callbacks) == 1)
                         sent = callbacks.pop()
                         self.assertEqual(sent['taskId'], 'T1114')
-                        self.assertEqual(sent['taskStatus'], 'FAILED')
+                        self.assertEqual(sent['taskStCd'], 2)
                         self.assertEqual(sent['errorMsg'], message)
-                        self.assertEqual(sent['checkListItems'], [])
+                        self.assertEqual(sent['paramsJson'], '[]')
                         self.assertEqual(TaskStore(Path(self.directory.name)).counts(), {})
                         self.assertEqual(started, [])
                 invalid = await client.post(prefix + '/api/v1/tasks',
@@ -325,7 +342,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(created.json()['autoReply'], 'task created')
                 await self.spin(lambda: len(callbacks) == 1)
                 self.assertEqual(started, [unwrapped])
-                self.assertEqual(callbacks[0]['taskStatus'], 'DONE')
+                self.assertEqual(callbacks[0]['taskStCd'], 1)
 
     async def test_create_accepts_without_pdf_network_and_invalid_input_does_not_replace(self):
         from gateway.main import create_app
@@ -366,11 +383,11 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                     await self.spin(lambda: len(callbacks) == 1)
                     url, body = callbacks[0]
                     self.assertEqual(url, callback_url)
-                    self.assertEqual(set(body), {'taskId', 'taskStatus', 'generatedAt', 'errorMsg', 'checkListItems'})
+                    self.assertEqual(set(body), {'taskId', 'taskStCd', 'generatedAt', 'errorMsg', 'paramsJson'})
                     self.assertEqual(body['taskId'], 'INCOMPLETE')
-                    self.assertEqual(body['taskStatus'], 'FAILED')
+                    self.assertEqual(body['taskStCd'], 2)
                     self.assertEqual(body['errorMsg'], received.json()['autoReply'])
-                    self.assertEqual(body['checkListItems'], [])
+                    self.assertEqual(body['paramsJson'], '[]')
                     self.assertEqual(app.state.store.counts(), {'PROCESSING': 1})
                     self.assertEqual(len(started), 1)
                     invalid = await client.post('/api/v1/tasks', json=business(task='INVALID') | {'aspdNm': 123})
@@ -393,8 +410,8 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(response.status_code, code)
                 gate.set()
                 await self.spin(lambda: len(callbacks) == 2)
-                self.assertEqual([(url, body['taskId'], body['taskStatus']) for url, body in callbacks],
-                                 [(callback_url, 'INCOMPLETE', 'FAILED'), (callback_url, 'T1', 'DONE')])
+                self.assertEqual([(url, body['taskId'], body['taskStCd']) for url, body in callbacks],
+                                 [(callback_url, 'INCOMPLETE', 2), (callback_url, 'T1', 1)])
 
 
 class DifyClientTests(unittest.IsolatedAsyncioTestCase):
