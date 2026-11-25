@@ -4,6 +4,8 @@
 
 ## 选择环境和镜像地址
 
+回调或影像使用主备地址时，在所选环境的 `material-checklist.yaml` 的 `stringData` 中用空格分隔多个 URL。影像配置多个地址时，`IMAGE_PLATFORM_GATEWAY_URL` 填写 HiAgent 转换插件可访问的高码入口。走 Ingress 时，入口需带 `/material-checklist` 前缀。格式和超时规则见 [高码配置](../../DEPLOYMENT.md#高码配置)。
+
 四套配置分别位于 `k8s/sit/`、`k8s/pi/`、`k8s/uat/`、`k8s/prod/`，命名空间均为 `agent2`。通过 `DEPLOY_ENV=sit|pi|uat|prod` 选择打包的 YAML，默认 `sit`。四套配置用于各自的集群；执行前确认目标 context，不能在同一集群的 `agent2` 同时部署多套同名服务。
 
 每个环境使用独立的镜像清单：

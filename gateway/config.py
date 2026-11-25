@@ -5,10 +5,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
+IMAGE_ROUTE = '/v1/task-images/'
+TASK_BUDGET_SECONDS = 1800
 DEFAULT_CALLBACK_URL = 'http://10.240.184.200:9090/NLSC/LdsAiTaskESBFunctionApi/0.1.0/ldaAiTaskResultCallback'
 CONFIG_NAMES = {
     'DIFY_API_URL', 'DIFY_API_KEY', 'CALLBACK_URL',
-    'IMAGE_PLATFORM_DOWNLOAD_BASE_URL', 'IMAGE_PLATFORM_AU',
+    'IMAGE_PLATFORM_DOWNLOAD_BASE_URL', 'IMAGE_PLATFORM_AU', 'IMAGE_PLATFORM_GATEWAY_URL',
 }
 # Previously delivered files remain readable during upgrade; obsolete options have no effect.
 LEGACY_NAMES = {
@@ -17,6 +19,22 @@ LEGACY_NAMES = {
     'API_PORT', 'RULES_PORT', 'APP_NAME', 'DEPLOY_DIR', 'IMAGE_TAG', 'CLOUD_PROXY_PORT',
     'CLOUD_TUNNEL_DNS', 'DIFY_MODEL_PROVIDER', 'DIFY_MODEL_NAME',
 }
+
+
+def endpoint_urls(value, option, *, allow_query=False):
+    urls = tuple(dict.fromkeys(value.split()))
+    for url in urls:
+        try:
+            parsed = urlsplit(url)
+            parsed.port
+            valid = (parsed.scheme in ('http', 'https') and parsed.hostname and
+                     parsed.username is None and '\\' not in url and '#' not in url and
+                     (allow_query or '?' not in url))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError(f'请配置有效的 {option} HTTP(S) 地址')
+    return urls
 
 
 def read_configuration(config_path=None):
@@ -51,11 +69,12 @@ class Settings:
     api_url: str = ''
     api_key: str = field(default='', repr=False)
     storage_root: Path = ROOT / 'gateway_storage'
-    read_timeout: float = 1800
+    read_timeout: float = TASK_BUDGET_SECONDS
     rules_dir: Path = ROOT / 'rules'
     image_platform_download_base_url: str = ''
     image_platform_au: str = field(default='', repr=False)
     callback_url: str = DEFAULT_CALLBACK_URL
+    image_platform_gateway_url: str = ''
 
     @classmethod
     def from_env(cls, config_path=None):
@@ -64,7 +83,8 @@ class Settings:
                    api_key=values.get('DIFY_API_KEY', ''),
                    image_platform_download_base_url=values.get('IMAGE_PLATFORM_DOWNLOAD_BASE_URL', ''),
                    image_platform_au=values.get('IMAGE_PLATFORM_AU', ''),
-                   callback_url=values.get('CALLBACK_URL', '').strip() or DEFAULT_CALLBACK_URL)
+                   callback_url=values.get('CALLBACK_URL', '').strip() or DEFAULT_CALLBACK_URL,
+                   image_platform_gateway_url=values.get('IMAGE_PLATFORM_GATEWAY_URL', '').strip())
 
     def require_dify(self):
         import math

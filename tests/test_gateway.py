@@ -179,13 +179,105 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             await callback.send(dict(saved, callbackResult=checked))
         expected = copy.deepcopy(original)
         expected['checkListItems'][0].update(
-            materialName='一级目录-营业执照（原件）', publishDate='2026-09-29 00:00:00',
+            materialName='一级目录-营业执照（原件）', publishDate='2026-09-29',
             sourceSystem='系统.A', publishDepartment='发布。部门')
         expected['checkListItems'][1].update(materialName='[核查]名称[产品甲]',
-                                             publishDate='2026-09-30 11:22:33', publishDepartment='部门 ')
+                                             publishDate='2026-09-30', publishDepartment='部门 ')
         self.assertEqual(requests, [expected])
         self.assertEqual(checked, original)
         self.assertEqual(self.store.get(record['generationId'])['result'], stored)
+
+    async def test_callback_retries_body_disconnect_using_same_request(self):
+        from gateway.callback import TaskCallback
+
+        class BrokenBody(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'partial'
+                raise httpx.ReadError('disconnected')
+
+        seen = []
+
+        async def receive(request):
+            seen.append(request)
+            if request.url.host == 'primary.test':
+                return httpx.Response(200, stream=BrokenBody())
+            return httpx.Response(200)
+
+        async with TaskCallback(self.store, callback_url='http://primary.test/cp http://backup.test/cp',
+                                transport=httpx.MockTransport(receive)) as callback:
+            await callback.send(dict(taskId='T1', status='FAILED', reason='测试'), check_latest=False)
+        self.assertEqual([request.url.host for request in seen], ['primary.test', 'backup.test'])
+        self.assertEqual(seen[0].content, seen[1].content)
+        self.assertEqual(seen[0].headers['g-fullchnl-srl-id'], seen[1].headers['g-fullchnl-srl-id'])
+
+    async def test_image_failover_passes_one_download_to_existing_workflow(self):
+        from gateway.config import Settings
+        from gateway.main import create_app
+
+        pdf = b'%PDF-1.7\nexample'
+        seen = []
+
+        async def upstream(request):
+            seen.append((request.method, request.url.host))
+            if request.url.host in ('images-a.test', 'images-b.test'):
+                self.assertEqual(request.url.params['au'], 'shared-au')
+                self.assertTrue(request.url.path.endswith('/20260729/test/file.pdf'))
+                if request.url.host == 'images-a.test':
+                    raise httpx.ReadTimeout('image primary timed out')
+                return httpx.Response(200, content=pdf)
+            payload = json.loads(json.loads(request.content)['InputData'])
+            self.assertEqual(set(payload), {'businessData'})
+            data = json.loads(payload['businessData'])
+            self.assertTrue(data['replyImageUrl'].startswith('http://gateway.test/v1/task-images/'))
+            for _ in range(2):
+                image = await workflow_http.get(data['replyImageUrl'])
+                self.assertEqual((image.status_code, image.content), (200, pdf))
+            image_urls.append(data['replyImageUrl'])
+            return httpx.Response(200, json={'runId': 'RUN1', 'output': json.dumps(workflow_outputs(data))})
+
+        callbacks, image_urls = [], []
+
+        async def receive_callback(request):
+            callbacks.append(json.loads(request.content))
+            return httpx.Response(200)
+
+        config = Settings(storage_root=Path(self.directory.name), api_url='http://hiagent.test/sync', api_key='key',
+                          image_platform_download_base_url='http://images-a.test/a http://images-b.test/b',
+                          image_platform_au='shared-au', image_platform_gateway_url='http://gateway.test')
+        app = create_app(config, workflow_transport=httpx.MockTransport(upstream),
+                         callback_transport=httpx.MockTransport(receive_callback))
+        async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as workflow_http:
+            response = await workflow_http.post('http://gateway.test/api/v1/tasks', json=business())
+            self.assertEqual(response.status_code, 200)
+            await self.spin(lambda: len(callbacks) == 1)
+            self.assertEqual(callbacks[0]['taskStatus'], 'DONE')
+            self.assertEqual((await workflow_http.get(image_urls[0])).status_code, 404)
+        self.assertEqual(seen, [('GET', 'images-a.test'), ('GET', 'images-b.test'), ('POST', 'hiagent.test')])
+
+    async def test_workflow_has_one_budget_and_leaves_time_for_failure_callback(self):
+        from gateway.config import Settings
+        from gateway.main import create_app
+
+        async def upstream(request):
+            await asyncio.Event().wait()
+
+        callbacks = []
+
+        async def receive_callback(request):
+            callbacks.append(json.loads(request.content))
+            return httpx.Response(200)
+
+        config = Settings(storage_root=Path(self.directory.name), api_url='http://hiagent.test/sync',
+                          api_key='key', read_timeout=0.2)
+        app = create_app(config, workflow_transport=httpx.MockTransport(upstream),
+                         callback_transport=httpx.MockTransport(receive_callback))
+        async with app.router.lifespan_context(app), httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as http:
+            with self.assertLogs('material_service', level='INFO') as log:
+                self.assertEqual((await http.post('http://gateway.test/api/v1/tasks', json=business())).status_code, 200)
+                await self.spin(lambda: len(callbacks) == 1)
+        self.assertEqual(callbacks[0]['errorMsg'], 'HiAgent 请求超时')
+        self.assertTrue(any('queue_ms=' in line and 'taskId="T1"' in line for line in log.output))
+        self.assertTrue(any('任务处理阶段失败' in line and 'TimeoutError' in line for line in log.output))
 
     async def test_business_data_object_uses_the_same_task_contract(self):
         from gateway.config import Settings
@@ -306,6 +398,54 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DifyClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_network_failure_logs_safe_details_and_response_phase(self):
+        from unittest.mock import patch
+        from gateway.client import DifyClient, WorkflowError
+        from gateway.config import Settings
+
+        class BrokenBody(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'{"private":'
+                raise httpx.RemoteProtocolError('private response and credential detail')
+
+        cases = (
+            ('headers', 'RemoteProtocolError', 'HiAgent 请求超时', 'response_headers'),
+            ('connect', 'ConnectError', 'HiAgent 请求超时', 'response_headers'),
+            ('timeout', 'ReadTimeout', 'HiAgent 请求超时', 'response_headers'),
+            ('body', 'RemoteProtocolError', 'HiAgent 请求超时', 'response_body'),
+        )
+        for case, error_type, reason, phase in cases:
+            with self.subTest(case=case):
+                async def receive(request):
+                    self.assertEqual(request.extensions['timeout']['read'], 1800)
+                    if case == 'body':
+                        return httpx.Response(200, stream=BrokenBody())
+                    if case == 'connect':
+                        raise httpx.ConnectError('private endpoint detail') from ConnectionRefusedError(111, 'private address')
+                    if case == 'timeout':
+                        raise httpx.ReadTimeout('private endpoint detail')
+                    raise httpx.RemoteProtocolError('private response detail')
+
+                async with DifyClient(Settings(api_url='http://hiagent/sync_run_app_workflow', api_key='private-key'),
+                                      transport=httpx.MockTransport(receive)) as client:
+                    with patch('gateway.client.perf_counter', side_effect=[100.0, 100.0, 400.0] if case == 'body' else [100.0, 400.0], create=False):
+                        with self.assertLogs('material_service', level='INFO') as logs:
+                            with self.assertRaisesRegex(WorkflowError, reason):
+                                await client.run(dict(taskId='T-NETWORK', generationId='G-NETWORK',
+                                                      businessData=business()))
+                text = '\n'.join(logs.output)
+                self.assertIn('error_type="' + error_type + '"', text)
+                self.assertIn('phase="' + phase + '"', text)
+                self.assertIn('read_timeout_s=1800', text)
+                self.assertIn('elapsed_ms=300000.0', text)
+                self.assertNotIn('private', text)
+                if case == 'connect':
+                    self.assertIn('ConnectionRefusedError', text)
+                    self.assertIn('111', text)
+                if case == 'body':
+                    self.assertIn('HiAgent 响应头已收到', text)
+                    self.assertIn('status_code=200', text)
+
     async def test_sync_runs_use_configured_endpoint_and_keep_inputs_separate(self):
         from gateway.client import DifyClient
         from gateway.config import Settings

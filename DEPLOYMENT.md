@@ -26,6 +26,7 @@ DIFY_API_URL=<Postman中调用成功的完整HiAgent同步接口URL>
 DIFY_API_KEY=<HiAgent已发布应用的APIKey>
 IMAGE_PLATFORM_DOWNLOAD_BASE_URL=影像下载地址头
 IMAGE_PLATFORM_AU=现场AU
+IMAGE_PLATFORM_GATEWAY_URL=<影像多地址时填写HiAgent转换插件可访问的高码入口>
 CALLBACK_URL=<CP回调接口的完整URL>
 ```
 
@@ -33,12 +34,23 @@ CALLBACK_URL=<CP回调接口的完整URL>
 
 请求体的 UserID 固定为 CP。高码把 CP 业务对象序列化成 businessData 字符串，再把包含 businessData 的开始节点入参对象序列化成 InputData 字符串。同步响应的 status 字段如有返回须为 success。高码解析 output 字符串并提取 result 和 callbackResult，响应包含 runId 时记录该编号。output 为 null 或缺少业务结果时，任务标记为失败，可按 runId 核对 HiAgent 的执行记录。CP 提交任务后立即收到受理响应，后台执行器等待同步接口返回。
 
-修改 gateway.env 后重启高码。CP 传入相对路径时，高码把已填写的 IMAGE_PLATFORM_DOWNLOAD_BASE_URL 和 IMAGE_PLATFORM_AU 映射为开始节点的 image_platform_download_base_url 和 image_platform_au，和 businessData 同层放入 InputData。留空的配置交由 HiAgent 工作流默认值或绑定变量提供。工作流按相对路径编码、拼接并附加 au 参数。CP 传入完整 HTTP(S) PDF 地址时，工作流直接下载。
+修改 gateway.env 后重启高码。CP 传入完整 HTTP(S) PDF 地址时，工作流直接下载。CP 传入相对路径且影像下载只配置一个地址时，高码仍将基地址和 AU 传给工作流拼接。留空时由工作流默认值或绑定变量提供。
 
+影像下载和 CP 回调可以分别在原配置项中用空格列出多个地址。
 
-在 gateway.env 中用 CALLBACK_URL 设置 CP 回调接口的完整 URL。缺少该项或留空时，沿用现有地址。
+```text
+IMAGE_PLATFORM_DOWNLOAD_BASE_URL=https://image-primary.example/download https://image-backup.example/download
+IMAGE_PLATFORM_GATEWAY_URL=https://checklist-gateway.example
+CALLBACK_URL=https://cp-primary.example/callback https://cp-backup.example/callback
+```
+
+每笔任务从第一个地址开始，每个地址最多尝试一次。影像多地址模式下，高码使用同一个 `IMAGE_PLATFORM_AU` 下载，相对路径需要从高码访问各影像地址。单个影像地址尝试最多 30 秒。高码只将下载成功的临时 PDF 地址交给 HiAgent，插件需能访问 `IMAGE_PLATFORM_GATEWAY_URL` 下的 `/v1/task-images/`。临时地址在工作流返回或中断后失效。
+
+CP 回调遇到连接失败、读取超时或中途断开时切换到下一个地址，发出的正文和 C/F 流水号保持一致。每个回调地址最多使用 10 秒。完整收到 HTTP 响应后记录状态，完成本次推送尝试。缺少 CALLBACK_URL 或留空时，沿用现有地址。
 `http://10.240.184.200:9090/NLSC/LdsAiTaskESBFunctionApi/0.1.0/ldaAiTaskResultCallback`。
-沿用原回调请求头和 C/F 流水号、北京时间格式。回调正文使用格式 B 的五个字段；失败返回 FAILED、错误信息和空清单。
+回调正文使用格式 B 的五个字段。`checkListItems[].publishDate` 发送 `YYYY-MM-DD`，`generatedAt` 保留原时间格式。失败返回 FAILED、错误信息和空清单。
+
+任务出队后，共用 1800 秒处理预算，包括影像下载、HiAgent 调用和 CP 回调。高码提前给回调预留尝试时间，排队耗时单独记录。通过 `taskId` 可关联任务、影像尝试、HiAgent 请求、结果校验和回调日志。
 
 ## 一个端口提供全部高码接口
 

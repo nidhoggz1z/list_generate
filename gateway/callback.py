@@ -3,6 +3,7 @@ import asyncio
 from datetime import datetime
 import logging
 import re
+from time import perf_counter
 from uuid import uuid4
 
 import httpx
@@ -10,7 +11,9 @@ import httpx
 from .service_log import BEIJING,event
 from .material_tree import iter_materials
 from .result_format import build_callback
-from .config import DEFAULT_CALLBACK_URL
+from .config import DEFAULT_CALLBACK_URL, endpoint_urls
+
+CALLBACK_ATTEMPT_SECONDS = 10
 
 def bank_time(value=None):
     value = datetime.now(BEIJING) if value is None else datetime.fromisoformat(value).astimezone(BEIJING)
@@ -39,7 +42,7 @@ def format_callback_materials(body, result, target_product=''):
         formatted = dict(item)
         if product:
             formatted['materialName'] = item['materialName'].removeprefix(f'[{product}]')
-        formatted['publishDate'] = re.sub(r'(?<=\d)[ \t]*T[ \t]*(?=\d)', ' ', item['publishDate'], count=1)
+        formatted['publishDate'] = item['publishDate'][:10]
         for field in ('sourceSystem', 'publishDepartment'):
             formatted[field] = re.sub(r'[。.]+(?=\s*$)', '', item[field])
         items.append(formatted)
@@ -49,8 +52,8 @@ def format_callback_materials(body, result, target_product=''):
 class TaskCallback:
     def __init__(self, store, *, callback_url=DEFAULT_CALLBACK_URL, transport=None):
         self.store = store
-        self.callback_url = callback_url
-        self.http = httpx.AsyncClient(timeout=10,trust_env=False,transport=transport)
+        self.urls = endpoint_urls(callback_url, 'CALLBACK_URL', allow_query=True) or (DEFAULT_CALLBACK_URL,)
+        self.http = httpx.AsyncClient(timeout=CALLBACK_ATTEMPT_SECONDS, trust_env=False, transport=transport)
         self.pending = set()
 
     async def __aenter__(self):
@@ -84,12 +87,39 @@ class TaskCallback:
                        'g-cnsm-side-srl-id':'C'+uuid4().hex,'g-fullchnl-srl-id':'F'+uuid4().hex,
                        'g-cnsm-side-trans-tm':bank_time(),'g-chnl-id':'HAW','g-chnl-trans-cd':'01',
                        'Content-Type':'application/json'}
-            if check_latest and not self.store.is_latest(record['generationId']):
-                event('发送前发现更新任务，旧回调已跳过',record)
-                return
-            # Single attempt, ignore HTTP status/body, do not follow redirects.
-            async with self.http.stream('POST',self.callback_url,headers=headers,json=body):
-                pass
-            event('任务终态推送已发送',record,status=record['status'])
+            await self.send_to_endpoints(record, check_latest, body, headers)
         except Exception as error:
             event('任务终态推送异常',record,level=logging.WARNING,error_type=type(error).__name__)
+
+    async def send_to_endpoints(self, record, check_latest, body, headers):
+        loop = asyncio.get_running_loop()
+        deadline = record.get('taskDeadline', loop.time() + CALLBACK_ATTEMPT_SECONDS * len(self.urls))
+        for attempt, url in enumerate(self.urls, 1):
+            if check_latest and not self.store.is_latest(record['generationId']):
+                event('发送前发现更新任务，旧回调已跳过', record, attempt=attempt)
+                return
+            if loop.time() >= deadline:
+                event('任务时间预算已用尽，回调结束', record, level=logging.WARNING, attempts=attempt - 1)
+                return
+            started = perf_counter()
+            status_code = None
+            event('任务终态开始推送', record, attempt=attempt, endpoint_count=len(self.urls),
+                  status=body['taskStatus'], material_count=len(body['checkListItems']))
+            try:
+                async with asyncio.timeout_at(min(deadline, loop.time() + CALLBACK_ATTEMPT_SECONDS)):
+                    async with self.http.stream('POST', url, headers=headers, json=body) as response:
+                        status_code = response.status_code
+                        if not response.is_stream_consumed:
+                            async for _ in response.aiter_raw():
+                                pass
+                event('任务终态推送已发送' if response.is_success else 'CP 回调返回非成功 HTTP 状态', record,
+                      level=logging.INFO if response.is_success else logging.WARNING,
+                      status=body['taskStatus'], http_status=status_code, attempt=attempt,
+                      duration_ms=round((perf_counter() - started) * 1000, 2))
+                return
+            except (httpx.TransportError, TimeoutError) as error:
+                event('任务终态推送尝试失败', record, level=logging.WARNING, attempt=attempt,
+                      http_status=status_code, error_type=type(error).__name__,
+                      retry=attempt < len(self.urls) and loop.time() < deadline,
+                      duration_ms=round((perf_counter() - started) * 1000, 2))
+        event('任务终态推送失败，已尝试所有回调地址', record, level=logging.WARNING, attempts=len(self.urls))

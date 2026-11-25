@@ -7,10 +7,21 @@ from pathlib import Path
 import sys
 from time import perf_counter
 
+from .config import IMAGE_ROUTE
+
 BEIJING = timezone(timedelta(hours=8))
 DEFAULT_LOG_DIR = Path(__file__).resolve().parent / 'log'
 logger = logging.getLogger('material_service')
 LOGGERS = (logger, logging.getLogger('task_files'), logging.getLogger('task_worker'))
+
+
+def redact_image_ticket(record):
+    # Uvicorn logs the raw request URL in the third argument of its access log.
+    if isinstance(record.args, tuple) and len(record.args) == 5:
+        client, method, path, version, status = record.args
+        if isinstance(path, str) and IMAGE_ROUTE in path:
+            record.args = (client, method, path.split(IMAGE_ROUTE, 1)[0] + IMAGE_ROUTE + '{ticket}', version, status)
+    return True
 
 
 class BeijingFormatter(logging.Formatter):
@@ -62,6 +73,8 @@ def daily_logging(directory=None):
         yield
         return
     handler = DailyLogHandler(directory)
+    access_log = logging.getLogger('uvicorn.access')
+    access_log.addFilter(redact_image_ticket)
     levels = [item.level for item in LOGGERS]
     for item in LOGGERS:
         item.addHandler(handler)
@@ -69,6 +82,7 @@ def daily_logging(directory=None):
     try:
         yield
     finally:
+        access_log.removeFilter(redact_image_ticket)
         for item, level in zip(LOGGERS, levels):
             item.removeHandler(handler)
             item.setLevel(level)

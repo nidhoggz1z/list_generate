@@ -7,6 +7,7 @@ import sqlite3
 from time import perf_counter
 
 from .client import WorkflowError
+from .config import TASK_BUDGET_SECONDS
 from .material_tree import iter_materials
 from .result_format import build_callback
 from .service_log import BEIJING, event
@@ -64,8 +65,10 @@ def validate_outputs(record, outputs):
 class TaskWorker:
     concurrency = 5
 
-    def __init__(self, store, run_workflow, notify_terminal):
+    def __init__(self, store, run_workflow, notify_terminal, *, task_budget=TASK_BUDGET_SECONDS, callback_reserve=10):
         self.store,self.run_workflow,self.notify_terminal = store,run_workflow,notify_terminal
+        self.task_budget = task_budget
+        self.callback_reserve = min(callback_reserve, task_budget / 2)
         self.wake = asyncio.Event()
         self.tasks = []
 
@@ -95,19 +98,39 @@ class TaskWorker:
                     await self.wake.wait()
                     continue
                 started = perf_counter()
-                event('任务开始处理',record,status='PROCESSING')
+                deadline = asyncio.get_running_loop().time() + self.task_budget
+                queue_ms = (datetime.now(BEIJING) - datetime.fromisoformat(record['createdAt'])).total_seconds() * 1000
+                event('任务开始处理', record, status='PROCESSING', queue_ms=round(max(0, queue_ms), 2),
+                      task_budget_s=self.task_budget, callback_reserve_s=self.callback_reserve)
+                stage = 'workflow'
                 try:
-                    output = await self.run_workflow(record)
+                    async with asyncio.timeout_at(deadline - self.callback_reserve):
+                        output = await self.run_workflow(record)
+                    stage = 'result_validation'
+                    validation_started = perf_counter()
                     result, callback = validate_outputs(record, output)
+                    event('工作流结果已校验', record, status=callback['taskStatus'],
+                          material_count=len(callback['checkListItems']),
+                          duration_ms=round((perf_counter() - validation_started) * 1000, 2))
+                    stage = 'storage'
                     terminal = self.store.finish(record['generationId'], result=result,
                                                  reason=callback['errorMsg'] or None)
                     terminal['callbackResult'] = callback
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
-                    reason = str(error) if isinstance(error,WorkflowError) else '任务处理失败：工作流结果或存储异常'
+                    if isinstance(error, TimeoutError):
+                        reason = 'HiAgent 请求超时'
+                    elif isinstance(error, WorkflowError):
+                        reason = str(error)
+                    else:
+                        reason = '任务处理失败：工作流结果或存储异常'
+                    event('任务处理阶段失败', record, level=logging.WARNING, stage=stage,
+                          error_type=type(error).__name__, reason=reason)
                     terminal = self.store.finish(record['generationId'],reason=reason)
-                event('任务处理结束',record,status=terminal['status'],
+                terminal['taskDeadline'] = deadline
+                event('任务处理结束', record, status=terminal['status'], workflow_run_id=terminal.get('workflowRunId'),
+                      material_count=terminal['result']['total'] if terminal['result'] else 0,
                       duration_ms=round((perf_counter()-started)*1000,2))
                 if self.store.is_latest(record['generationId']):
                     self.notify_terminal(terminal)

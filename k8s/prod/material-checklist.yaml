@@ -14,6 +14,7 @@ stringData:
   CALLBACK_URL: "<PROD环境CP回调完整URL>"
   IMAGE_PLATFORM_DOWNLOAD_BASE_URL: ""
   IMAGE_PLATFORM_AU: ""
+  IMAGE_PLATFORM_GATEWAY_URL: ""
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -4,15 +4,15 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI,Request
+from fastapi import FastAPI,Request,Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BeforeValidator
 
 from service.app import InvalidFileName, RuleStore
-from .callback import TaskCallback
+from .callback import CALLBACK_ATTEMPT_SECONDS, TaskCallback
 from .client import DifyClient
-from .config import Settings
+from .config import IMAGE_ROUTE, Settings
 from .service_log import RequestLogMiddleware,daily_logging,event
 from .store import StorageOwnership,TaskStore
 from .task_models import BusinessObject, CreateTaskRequest, CreateResponse, FileContentRequest, TaskRequestReceived
@@ -39,23 +39,27 @@ TaskRequestBody = Annotated[
 ]
 
 
-def create_app(settings=None, *, run_workflow=None, callback_transport=None):
+def create_app(settings=None, *, run_workflow=None, callback_transport=None, workflow_transport=None):
     @asynccontextmanager
     async def lifespan(app):
         config = settings or Settings.from_env()
         with daily_logging(Path(config.storage_root)/'log'), StorageOwnership(config.storage_root):
             store = TaskStore(config.storage_root)
-            async with DifyClient(config,on_started=store.save_run_id) as client, TaskCallback(
+            async with DifyClient(config, on_started=store.save_run_id, transport=workflow_transport) as client, TaskCallback(
                     store,callback_url=config.callback_url,transport=callback_transport) as callback:
-                worker = TaskWorker(store,run_workflow or client.run,callback.notify)
+                worker = TaskWorker(store, run_workflow or client.run, callback.notify,
+                                    task_budget=config.read_timeout,
+                                    callback_reserve=CALLBACK_ATTEMPT_SECONDS * len(callback.urls))
                 app.state.store,app.state.worker,app.state.settings = store,worker,config
                 app.state.callback = callback
+                app.state.task_images = client.images.files
                 app.state.rules = RuleStore(config.rules_dir)
                 for record in store.recover_interrupted():
                     if store.is_latest(record['generationId']):
                         callback.notify(record)
                 worker.start()
-                event('包装服务启动',concurrency=worker.concurrency)
+                event('包装服务启动', concurrency=worker.concurrency, task_budget_s=worker.task_budget,
+                      callback_endpoint_count=len(callback.urls), image_endpoint_count=len(client.images.bases))
                 try:
                     yield
                 finally:
@@ -124,6 +128,14 @@ def create_app(settings=None, *, run_workflow=None, callback_transport=None):
     @app.get('/health')
     async def health():
         return dict(status='healthy',service='material-checklist-gateway',concurrency=TaskWorker.concurrency,tasks=app.state.store.counts())
+
+    @app.api_route(IMAGE_ROUTE + '{ticket}', methods=['GET', 'HEAD'], include_in_schema=False)
+    async def task_image(ticket: str, request: Request):
+        content = request.app.state.task_images.get(ticket)
+        if content is None:
+            return Response(status_code=404)
+        return Response(content=content if request.method == 'GET' else b'', media_type='application/pdf',
+                        headers={'Cache-Control': 'no-store', 'Content-Length': str(len(content))})
 
     @app.get('/v1/checklist-files')
     def list_checklist_files():
