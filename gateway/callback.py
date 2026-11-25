@@ -28,11 +28,14 @@ def terminal_response(record):
     raise ValueError('只推送成功或失败')
 
 
-def format_callback_materials(body, result):
+def format_callback_materials(body, result, target_product=''):
     materials = iter_materials((result or {}).get('items', []))
+    products = (result or {}).get('products', [])
+    if not target_product and len(products) == 1:
+        target_product = products[0].get('extractedProductName', '')
     items = []
     for item in body['checkListItems']:
-        product = next(materials, {}).get('productName')
+        product = next(materials, {}).get('productName') or target_product
         formatted = dict(item)
         if product:
             formatted['materialName'] = item['materialName'].removeprefix(f'[{product}]')
@@ -75,7 +78,8 @@ class TaskCallback:
         try:
             body = terminal_response(record)
             if body['taskStatus'] == 'DONE':
-                body = format_callback_materials(body, record.get('result'))
+                body = format_callback_materials(body, record.get('result'),
+                                                 record.get('businessData', {}).get('aspdNm', ''))
             headers = {'c-version':'4.0','g-svc-cd':'152517942','g-cnsm-side-sys-ind':'HAW',
                        'g-cnsm-side-srl-id':'C'+uuid4().hex,'g-fullchnl-srl-id':'F'+uuid4().hex,
                        'g-cnsm-side-trans-tm':bank_time(),'g-chnl-id':'HAW','g-chnl-trans-cd':'01',

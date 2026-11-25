@@ -141,16 +141,25 @@ class TaskNotCreatedResponse(Contract):
     reply: Literal['任务未创建']
 
 
-class ProductMetadata(Contract):
+class ProductNameFreeOutput(Contract):
+    """兼容读取旧结果中的 productName，新的公开输出不定义该字段。"""
+
+    @model_validator(mode='before')
+    @classmethod
+    def accept_previous_product_field(cls, value):
+        if isinstance(value, dict) and 'productName' in value:
+            value = {key: item for key, item in value.items() if key != 'productName'}
+        return value
+
+
+class ProductMetadata(ProductNameFreeOutput):
     extractedProductName: NonBlank
-    productName: NonBlank
     checklistFileName: NonBlank
 
 
-class MaterialItem(Contract):
+class MaterialItem(ProductNameFreeOutput):
     itemId: Annotated[str, StringConstraints(pattern=r'^R[0-9]{4,}$')]
     itemType: Literal['MATERIAL']
-    productName: NonBlank
     materialName: str
     sourceSystem: Annotated[str, StringConstraints(min_length=1)]
     policyBasis: str
@@ -189,14 +198,9 @@ class LegacyTaskResult(ResultMetadata):
     def consistent_items(self):
         if self.total != len(self.items):
             raise ValueError('total must equal items length')
-        names = {p.productName for p in self.products}
         for index, item in enumerate(self.items, 1):
             if item.itemId != f'R{index:04d}':
                 raise ValueError('item IDs must be sequential from R0001')
-            if item.productName not in names:
-                raise ValueError('item productName must occur in products')
-            if item.materialName and not item.materialName.startswith(f'[{item.productName}]'):
-                raise ValueError('materialName must have its product prefix')
         return self
 
 
@@ -215,8 +219,7 @@ class MaterialCategory(Contract):
         return self
 
 
-class ProductMaterials(Contract):
-    productName: NonBlank
+class ProductMaterials(ProductNameFreeOutput):
     categories: list[MaterialCategory]
 
     @model_validator(mode='after')
@@ -231,19 +234,14 @@ class TaskResult(ResultMetadata):
 
     @model_validator(mode='after')
     def consistent_items(self):
-        names = [p.productName for p in self.products]
-        if len(set(names)) != len(names) or [p.productName for p in self.items] != names:
-            raise ValueError('item product trees must follow the exact products list')
+        if len(self.items) != len(self.products):
+            raise ValueError('item product trees must follow the products list in count and order')
         index = 0
         for product in self.items:
             for item in iter_materials([product.model_dump()]):
                 index += 1
                 if item['itemId'] != f'R{index:04d}':
                     raise ValueError('item IDs must be sequential in tree display order')
-                if item['productName'] != product.productName:
-                    raise ValueError('material must belong to its product tree')
-                if item['materialName'] and not item['materialName'].startswith(f'[{product.productName}]'):
-                    raise ValueError('materialName must have its product prefix')
         if self.total != index:
             raise ValueError('total must equal material leaf count')
         return self
