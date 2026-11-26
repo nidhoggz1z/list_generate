@@ -18,12 +18,17 @@ class RuleInventoryError(Exception):
     """A snapshot cannot be indexed completely."""
 
 
+TYPE_COLUMN = '适用对象类型'
+RULE_OBJECT_TYPES = frozenset(('通用', '自然人', '机构', '不动产', '动产', '权利'))
+
+
 def build_rule_inventory(snapshots, cancel_check=lambda: False):
     """Return ordered detail rows; ruleKey is a JSON tuple of product and location.
 
     sourcePosition uses one-based table/row positions. cells retain paragraph and
     explicit line breaks, automatic labels and original source IDs. groups retain
-    merged heading rows. Unsupported layouts fail the entire inventory.
+    merged heading rows. An optional sixth column yields applicableObjectTypes
+    and leaves the five existing cells intact. Unsupported layouts fail the inventory.
     """
     result, names = [], set()
     if not isinstance(snapshots, (list, tuple)) or not snapshots:
@@ -98,25 +103,34 @@ def build_rule_inventory(snapshots, cancel_check=lambda: False):
                             raise ValueError()
                         texts.append('\n'.join(paragraph(p) for p in content))
                     if row_number == 1:
-                        if (len(texts) != 5 or texts[0] != '编号'
+                        column_count = len(texts)
+                        if (column_count not in (5, 6) or texts[0] != '编号'
                                 or texts[1] not in ('材料名称', '材料名称或核查事项')
-                                or texts[2:] != ['提供要求', '适用条件及材料要求', '规程依据'] or spans != [1] * 5):
+                                or texts[2:5] != ['提供要求', '适用条件及材料要求', '规程依据']
+                                or (column_count == 6 and texts[5] != TYPE_COLUMN)
+                                or spans != [1] * column_count):
                             raise ValueError()
                         groups = []
                         continue
                     position = f'table:{table_count}/row:{row_number}'
-                    if len(texts) == 2 and spans == [1, 4] and all(t.strip() for t in texts):
+                    if len(texts) == 2 and spans == [1, column_count - 1] and all(t.strip() for t in texts):
                         identifier = texts[0].strip()
                         if not re.fullmatch(r'\d+(\.\d+)*', identifier):
                             raise ValueError()
                         groups = [g for g in groups if identifier.startswith(g['sourceRuleId'] + '.')]
                         groups.append(dict(sourceRuleId=identifier, title=texts[1], sourcePosition=position))
-                    elif len(texts) == 5 and spans == [1] * 5 and texts[1].strip():
-                        result.append(dict(productName=name,
+                    elif len(texts) == column_count and spans == [1] * column_count and texts[1].strip():
+                        rule = dict(productName=name,
                             ruleKey=json.dumps([name, position], ensure_ascii=False, separators=(',', ':')),
                             sourceRuleId=texts[0].strip() or position, sourcePosition=position,
-                            cells=texts, groups=deepcopy(groups), rawMarker=texts[2],
-                            kind='CHECK' if '核查项' in texts[2] else 'MATERIAL'))
+                            cells=texts[:5], groups=deepcopy(groups), rawMarker=texts[2],
+                            kind='CHECK' if '核查项' in texts[2] else 'MATERIAL')
+                        if column_count == 6:
+                            types = [part.strip() for part in re.split(r'[、，,；;\n]', texts[5].strip())]
+                            if not set(types) <= RULE_OBJECT_TYPES or len(set(types)) != len(types):
+                                raise ValueError()
+                            rule['applicableObjectTypes'] = types
+                        result.append(rule)
                     else:
                         raise ValueError()
             if len(result) == start:
